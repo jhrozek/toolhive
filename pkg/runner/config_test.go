@@ -856,6 +856,8 @@ func TestNewRunConfigFromFlags(t *testing.T) {
 		nil,   // otelEnvironmentVariables
 		false, // isolateNetwork
 		k8sPodPatch,
+		"", // thvCABundle
+		"", // jwksAuthTokenFile
 		envVarValidator,
 	)
 	require.NoError(t, err, "NewRunConfigFromFlags should not return an error")

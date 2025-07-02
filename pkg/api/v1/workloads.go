@@ -283,6 +283,9 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 		nil,   // otelEnvironmentVariables - not exposed through API yet
 		false, // isolateNetwork - not exposed through API yet
 		"",    // k8s patch - not relevant here.
+		"",    // thvCABundle - not exposed through API yet
+		"",    // jwksAuthTokenFile - not exposed through API yet
+		false, // jwksAllowPrivateIP - not exposed through API yet
 		&runner.DetachedEnvVarValidator{},
 	)
 	if err != nil {

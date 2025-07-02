@@ -108,6 +108,15 @@ type RunConfig struct {
 
 	// IsolateNetwork indicates whether to isolate the network for the container
 	IsolateNetwork bool `json:"isolate_network,omitempty" yaml:"isolate_network,omitempty"`
+
+	// ThvCABundle is the path to the CA certificate bundle for ToolHive HTTP operations
+	ThvCABundle string `json:"thv_ca_bundle,omitempty" yaml:"thv_ca_bundle,omitempty"`
+
+	// JWKSAuthTokenFile is the path to file containing auth token for JWKS/OIDC requests
+	JWKSAuthTokenFile string `json:"jwks_auth_token_file,omitempty" yaml:"jwks_auth_token_file,omitempty"`
+
+	// JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
+	JWKSAllowPrivateIP bool `json:"jwks_allow_private_ip,omitempty" yaml:"jwks_allow_private_ip,omitempty"`
 }
 
 // WriteJSON serializes the RunConfig to JSON and writes it to the provided writer
@@ -171,6 +180,9 @@ func NewRunConfigFromFlags(
 	otelEnvironmentVariables []string,
 	isolateNetwork bool,
 	k8sPodPatch string,
+	thvCABundle string,
+	jwksAuthTokenFile string,
+	jwksAllowPrivateIP bool,
 	envVarValidator EnvVarValidator,
 ) (*RunConfig, error) {
 	// Ensure default values for host and targetHost
@@ -198,13 +210,16 @@ func NewRunConfigFromFlags(
 		Host:                        host,
 		IsolateNetwork:              isolateNetwork,
 		K8sPodTemplatePatch:         k8sPodPatch,
+		ThvCABundle:                 thvCABundle,
+		JWKSAuthTokenFile:           jwksAuthTokenFile,
+		JWKSAllowPrivateIP:          jwksAllowPrivateIP,
 	}
 
 	// Configure audit if enabled
 	configureAudit(config, enableAudit, auditConfigPath)
 
 	// Configure OIDC if any values are provided
-	configureOIDC(config, oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcAllowOpaqueTokens)
+	configureOIDC(config, oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, thvCABundle, jwksAuthTokenFile, jwksAllowPrivateIP, oidcAllowOpaqueTokens)
 
 	// Configure telemetry if endpoint or metrics port is provided
 	configureTelemetry(config, otelEndpoint, otelEnablePrometheusMetricsPath, otelServiceName,
@@ -239,7 +254,11 @@ func configureAudit(config *RunConfig, enableAudit bool, auditConfigPath string)
 }
 
 // configureOIDC sets up OIDC configuration if any values are provided
-func configureOIDC(config *RunConfig, oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID string, oidcAllowOpaqueTokens bool) {
+func configureOIDC(
+	config *RunConfig,
+	oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, thvCABundle, authTokenFile string,
+	allowPrivateIP, oidcAllowOpaqueTokens bool,
+) {
 	if oidcIssuer != "" || oidcAudience != "" || oidcJwksURL != "" || oidcClientID != "" {
 		config.OIDCConfig = &auth.TokenValidatorConfig{
 			Issuer:            oidcIssuer,
@@ -247,6 +266,9 @@ func configureOIDC(config *RunConfig, oidcIssuer, oidcAudience, oidcJwksURL, oid
 			JWKSURL:           oidcJwksURL,
 			ClientID:          oidcClientID,
 			AllowOpaqueTokens: oidcAllowOpaqueTokens,
+			CACertPath:        thvCABundle,
+			AuthTokenFile:     authTokenFile,
+			AllowPrivateIP: allowPrivateIP,
 		}
 	}
 }

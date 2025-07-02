@@ -73,6 +73,9 @@ var (
 	runK8sPodPatch       string
 	runCACertPath        string
 	runVerifyImage       string
+	runThvCABundle       string
+	runJWKSAuthTokenFile string
+	runJWKSAllowPrivateIP bool
 
 	// OpenTelemetry flags
 	runOtelEndpoint                    string
@@ -166,6 +169,24 @@ func init() {
 			retriever.VerifyImageEnabled,
 			retriever.VerifyImageDisabled,
 		),
+	)
+	runCmd.Flags().StringVar(
+		&runThvCABundle,
+		"thv-ca-bundle",
+		"",
+		"Path to CA certificate bundle for ToolHive HTTP operations (JWKS, OIDC discovery, etc.)",
+	)
+	runCmd.Flags().StringVar(
+		&runJWKSAuthTokenFile,
+		"jwks-auth-token-file",
+		"",
+		"Path to file containing bearer token for authenticating JWKS/OIDC requests",
+	)
+	runCmd.Flags().BoolVar(
+		&runJWKSAllowPrivateIP,
+		"jwks-allow-private-ip",
+		false,
+		"Allow JWKS/OIDC endpoints on private IP addresses (use with caution)",
 	)
 
 	// This is used for the K8s operator which wraps the run command, but shouldn't be visible to users.
@@ -335,6 +356,9 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		finalOtelEnvironmentVariables,
 		runIsolateNetwork,
 		runK8sPodPatch,
+		runThvCABundle,
+		runJWKSAuthTokenFile,
+		runJWKSAllowPrivateIP,
 		envVarValidator,
 	)
 	if err != nil {
