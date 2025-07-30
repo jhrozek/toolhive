@@ -874,6 +874,7 @@ func TestNewRunConfigFromFlags_MetadataOverrides(t *testing.T) {
 				"",
 				"",
 				false,
+				"", // resourceURL
 				"", // telemetry params...
 				"",
 				0,
@@ -934,6 +935,7 @@ func TestNewRunConfigFromFlags_EnvironmentVariableTransportDependency(t *testing
 		[]string{"USER_VAR=value"},
 		nil,                   // labels
 		"", "", "", "", false, // OIDC params
+		"", // resourceURL
 		"", "", 0, nil, false, false, nil, // telemetry params
 		false,
 		"",
@@ -991,6 +993,7 @@ func TestNewRunConfigFromFlags_CmdArgsMetadataPrepending(t *testing.T) {
 		nil,
 		nil, // labels
 		"", "", "", "", false,
+		"", // resourceURL
 		"", "", 0, nil, false, false, nil,
 		false,
 		"",
@@ -1049,6 +1052,7 @@ func TestNewRunConfigFromFlags_VolumeProcessing(t *testing.T) {
 		nil,
 		nil, // labels
 		"", "", "", "", false,
+		"", // resourceURL
 		"", "", 0, nil, false, false, nil,
 		false,
 		"",
