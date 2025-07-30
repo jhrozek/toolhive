@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/stacklok/toolhive/pkg/logger"
 	"net/http"
 	"strings"
 	"time"
@@ -48,7 +49,8 @@ type TokenValidator struct {
 	jwksURL           string
 	clientID          string
 	jwksClient        *jwk.Cache
-	allowOpaqueTokens bool // Whether to allow opaque tokens (non-JWT)
+	allowOpaqueTokens bool   // Whether to allow opaque tokens (non-JWT)
+	resourceURL       string // The explicit resource URL for OAuth discovery
 
 	// No need for additional caching as jwk.Cache handles it
 }
@@ -78,6 +80,9 @@ type TokenValidatorConfig struct {
 
 	// AllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
 	AllowPrivateIP bool
+
+	// ResourceURL is the explicit resource URL for OAuth discovery (RFC 9728)
+	ResourceURL string
 }
 
 // discoverOIDCConfiguration discovers OIDC configuration from the issuer's well-known endpoint
@@ -193,6 +198,7 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, allowOp
 		clientID:          config.ClientID,
 		jwksClient:        cache,
 		allowOpaqueTokens: allowOpaqueTokens,
+		resourceURL:       config.ResourceURL,
 	}, nil
 }
 
@@ -345,5 +351,67 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 		// Add the claims to the request context using a proper key type
 		ctx := context.WithValue(r.Context(), ClaimsContextKey{}, claims)
 		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// rfc9728AuthInfo represents the OAuth Protected Resource metadata as defined in RFC 9728
+type rfc9728AuthInfo struct {
+	Resource               string   `json:"resource"`
+	AuthorizationServers   []string `json:"authorization_servers"`
+	BearerMethodsSupported []string `json:"bearer_methods_supported"`
+	JWKSURI                string   `json:"jwks_uri"`
+	ScopesSupported        []string `json:"scopes_supported"`
+}
+
+// AuthInfoHandler creates an HTTP handler that returns RFC-9728 compliant OAuth Protected Resource metadata
+func (v *TokenValidator) AuthInfoHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Set CORS headers for all requests
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			// Allow all origins if none specified. This should be fine because this is a discovery endpoint.
+			origin = "*"
+		}
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		// At least
+		w.Header().Set("Access-Control-Allow-Headers", "mcp-protocol-version, Content-Type, Authorization")
+		w.Header().Set("Access-Control-Max-Age", "86400") // 24 hours
+
+		// Handle preflight OPTIONS request
+		if r.Method == http.MethodOptions {
+			logger.Debugf("AuthInfoHandler: Handling CORS preflight request from %s", origin)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		// Build the response
+		resourceURL := v.resourceURL
+		if resourceURL == "" {
+			logger.Warn("No resource URL configured, using default")
+			resourceURL = "http://localhost:9090/sse"
+		}
+
+		authInfo := rfc9728AuthInfo{
+			Resource:               resourceURL,
+			AuthorizationServers:   []string{v.issuer},
+			BearerMethodsSupported: []string{"header"},
+			JWKSURI:                v.jwksURL,
+			ScopesSupported:        []string{"mcp:read", "mcp:tools", "mcp:prompts"},
+		}
+
+		// Log at debug level for troubleshooting
+		logger.Debugf("AuthInfoHandler: Processing request for %s", r.URL.Path)
+		logger.Debugf("AuthInfoHandler: Returning response - Issuer: %s, JWKS URI: %s, Resource: %s", v.issuer, v.jwksURL, resourceURL)
+
+		// Set content type
+		w.Header().Set("Content-Type", "application/json")
+
+		// Encode and send the response
+		if err := json.NewEncoder(w).Encode(authInfo); err != nil {
+			logger.Errorf("Failed to encode OAuth discovery response: %v", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
 	})
 }
