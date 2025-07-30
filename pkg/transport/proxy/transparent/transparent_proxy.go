@@ -22,6 +22,7 @@ import (
 
 	"golang.org/x/exp/jsonrpc2"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/session"
@@ -66,6 +67,9 @@ type TransparentProxy struct {
 
 	// Listener for the HTTP server
 	listener net.Listener
+
+	// Authentication provider for OAuth discovery
+	authProvider auth.AuthenticationProvider
 }
 
 // NewTransparentProxy creates a new transparent proxy with optional middlewares.
@@ -76,6 +80,7 @@ func NewTransparentProxy(
 	targetURI string,
 	prometheusHandler http.Handler,
 	enableHealthCheck bool,
+	authProvider auth.AuthenticationProvider,
 	middlewares ...types.Middleware,
 ) *TransparentProxy {
 	proxy := &TransparentProxy{
@@ -87,6 +92,7 @@ func NewTransparentProxy(
 		shutdownCh:        make(chan struct{}),
 		prometheusHandler: prometheusHandler,
 		sessionManager:    session.NewManager(30*time.Minute, session.NewProxySession),
+		authProvider:      authProvider,
 	}
 
 	// Create MCP pinger and health checker only if enabled
@@ -239,15 +245,12 @@ func (p *TransparentProxy) modifyForSessionID(resp *http.Response) error {
 	return nil
 }
 
-// Start starts the transparent proxy.
-func (p *TransparentProxy) Start(ctx context.Context) error {
-	p.mutex.Lock()
-	defer p.mutex.Unlock()
-
+// setupReverseProxy creates and configures the reverse proxy handler
+func (p *TransparentProxy) setupReverseProxy() (http.Handler, *url.URL, error) {
 	// Parse the target URI
 	targetURL, err := url.Parse(p.targetURI)
 	if err != nil {
-		return fmt.Errorf("failed to parse target URI: %w", err)
+		return nil, nil, fmt.Errorf("failed to parse target URI: %w", err)
 	}
 
 	// Create a reverse proxy
@@ -264,29 +267,56 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		proxy.ServeHTTP(w, r)
 	})
 
-	// Create a mux to handle both proxy and health endpoints
-	mux := http.NewServeMux()
+	return handler, targetURL, nil
+}
 
+// applyMiddlewares applies the middleware chain to the handler
+func (p *TransparentProxy) applyMiddlewares(handler http.Handler) http.Handler {
 	// Apply middleware chain in reverse order (last middleware is applied first)
-	var finalHandler http.Handler = handler
+	finalHandler := handler
 	for i := len(p.middlewares) - 1; i >= 0; i-- {
 		finalHandler = p.middlewares[i](finalHandler)
 		logger.Infof("Applied middleware %d\n", i+1)
 	}
+	return finalHandler
+}
 
-	// Add the proxy handler for all paths except /health
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+// setupMainHandler creates the main proxy handler with excluded paths
+func (*TransparentProxy) setupMainHandler(finalHandler http.Handler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/health" {
 			// Health endpoint should not go through proxy
 			http.NotFound(w, r)
 			return
 		}
+		if strings.HasPrefix(r.URL.Path, "/.well-known/") {
+			// .well-known endpoints are handled separately without middlewares
+			http.NotFound(w, r)
+			return
+		}
 		finalHandler.ServeHTTP(w, r)
-	})
+	}
+}
 
+// setupSpecialEndpoints adds health, well-known, and metrics endpoints to the mux
+func (p *TransparentProxy) setupSpecialEndpoints(mux *http.ServeMux) {
 	// Add health check endpoint (no middlewares) only if health checker is enabled
 	if p.healthChecker != nil {
 		mux.Handle("/health", p.healthChecker)
+	}
+
+	// Add .well-known endpoints (no middlewares) if authentication provider is available
+	if p.authProvider != nil && p.authProvider.DiscoveryHandler() != nil {
+		wellKnownHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/.well-known/oauth-protected-resource":
+				p.authProvider.DiscoveryHandler().ServeHTTP(w, r)
+			default:
+				http.NotFound(w, r)
+			}
+		})
+		mux.Handle("/.well-known/", wellKnownHandler)
+		logger.Info("OAuth discovery endpoint enabled at /.well-known/oauth-protected-resource")
 	}
 
 	// Add Prometheus metrics endpoint if handler is provided (no middlewares)
@@ -294,6 +324,10 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		mux.Handle("/metrics", p.prometheusHandler)
 		logger.Info("Prometheus metrics endpoint enabled at /metrics")
 	}
+}
+
+// startServer creates and starts the HTTP server
+func (p *TransparentProxy) startServer(ctx context.Context, mux *http.ServeMux) error {
 	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", p.host, p.port))
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
@@ -318,12 +352,40 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 			logger.Errorf("Transparent proxy error: %v", err)
 		}
 	}()
+
 	// Start health-check monitoring only if health checker is enabled
 	if p.healthChecker != nil {
 		go p.monitorHealth(ctx)
 	}
 
 	return nil
+}
+
+// Start starts the transparent proxy.
+func (p *TransparentProxy) Start(ctx context.Context) error {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+
+	// Setup reverse proxy
+	handler, _, err := p.setupReverseProxy()
+	if err != nil {
+		return err
+	}
+
+	// Apply middlewares
+	finalHandler := p.applyMiddlewares(handler)
+
+	// Create a mux to handle both proxy and health endpoints
+	mux := http.NewServeMux()
+
+	// Add the main proxy handler
+	mux.HandleFunc("/", p.setupMainHandler(finalHandler))
+
+	// Add special endpoints (health, well-known, metrics)
+	p.setupSpecialEndpoints(mux)
+
+	// Start the server
+	return p.startServer(ctx, mux)
 }
 
 // CloseListener closes the listener for the transparent proxy.

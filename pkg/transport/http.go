@@ -227,7 +227,7 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 
 	// Create the transparent proxy with middlewares (enable healthcheck for MCP servers)
 	t.proxy = transparent.NewTransparentProxy(
-		t.host, t.proxyPort, t.containerName, targetURI, t.prometheusHandler, true, t.middlewares...)
+		t.host, t.proxyPort, t.containerName, targetURI, t.prometheusHandler, true, nil, t.middlewares...)
 	if err := t.proxy.Start(ctx); err != nil {
 		return err
 	}

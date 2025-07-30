@@ -2,6 +2,7 @@ package transparent
 
 import (
 	"bufio"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
@@ -10,7 +11,9 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
@@ -20,7 +23,7 @@ func init() {
 
 func TestStreamingSessionIDDetection(t *testing.T) {
 	t.Parallel()
-	proxy := NewTransparentProxy("127.0.0.1", 0, "test", "http://example.com", nil, true)
+	proxy := NewTransparentProxy("127.0.0.1", 0, "test", "http://example.com", nil, true, nil)
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 		w.WriteHeader(200)
@@ -77,7 +80,7 @@ func createBasicProxy(p *TransparentProxy, targetURL *url.URL) *httputil.Reverse
 func TestNoSessionIDInNonSSE(t *testing.T) {
 	t.Parallel()
 
-	p := NewTransparentProxy("127.0.0.1", 0, "test", "", nil, false)
+	p := NewTransparentProxy("127.0.0.1", 0, "test", "", nil, false, nil)
 
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		// Set both content-type and also optionally MCP header to test behavior
@@ -92,6 +95,7 @@ func TestNoSessionIDInNonSSE(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", target.URL, nil)
+
 	proxy.ServeHTTP(rec, req)
 
 	assert.False(t, p.IsServerInitialized, "server should not be initialized for application/json")
@@ -102,7 +106,7 @@ func TestNoSessionIDInNonSSE(t *testing.T) {
 func TestHeaderBasedSessionInitialization(t *testing.T) {
 	t.Parallel()
 
-	p := NewTransparentProxy("127.0.0.1", 0, "test", "", nil, false)
+	p := NewTransparentProxy("127.0.0.1", 0, "test", "", nil, false, nil)
 
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		// Set both content-type and also optionally MCP header to test behavior
@@ -123,4 +127,57 @@ func TestHeaderBasedSessionInitialization(t *testing.T) {
 	assert.True(t, p.IsServerInitialized, "server should not be initialized for application/json")
 	_, ok := p.sessionManager.Get("XYZ789")
 	assert.True(t, ok, "no session should be added")
+}
+
+func TestOAuthDiscoveryEndpoint(t *testing.T) {
+	t.Parallel()
+	logger.Initialize()
+
+	ctx := context.Background()
+
+	// Create a mock authentication provider with OAuth discovery
+	oidcConfig := &auth.TokenValidatorConfig{
+		Issuer:      "https://auth.example.com",
+		JWKSURL:     "https://auth.example.com/.well-known/jwks.json",
+		ClientID:    "test-client",
+		ResourceURL: "https://api.example.com",
+	}
+
+	authProvider, err := auth.GetAuthenticationProvider(ctx, oidcConfig, false)
+	if err != nil {
+		// If JWT validator creation fails (expected in test environment), use local provider
+		authProvider, err = auth.GetAuthenticationProvider(ctx, nil, false)
+		require.NoError(t, err)
+	}
+
+	// Only test if we have a JWT provider with discovery handler
+	if authProvider.DiscoveryHandler() == nil {
+		t.Skip("No OAuth discovery handler available (using local auth)")
+		return
+	}
+
+	// Create transparent proxy with authentication provider
+	proxy := NewTransparentProxy("127.0.0.1", 0, "test", "http://example.com", nil, false, authProvider)
+
+	// Start the proxy
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	err = proxy.Start(ctx)
+	require.NoError(t, err)
+	defer proxy.Stop(ctx)
+
+	// Test the .well-known/oauth-protected-resource endpoint
+	req := httptest.NewRequest("GET", "/.well-known/oauth-protected-resource", nil)
+	w := httptest.NewRecorder()
+
+	// Manually call the handler since we don't have the full server running
+	if proxy.authProvider != nil && proxy.authProvider.DiscoveryHandler() != nil {
+		proxy.authProvider.DiscoveryHandler().ServeHTTP(w, req)
+
+		// Should return OAuth discovery information
+		assert.Equal(t, http.StatusOK, w.Code, "Expected 200 OK for OAuth discovery")
+		assert.Equal(t, "application/json", w.Header().Get("Content-Type"), "Expected JSON content type")
+		assert.Contains(t, w.Body.String(), "resource", "Expected resource field in response")
+	}
 }

@@ -72,11 +72,11 @@ func (r *Runner) Run(ctx context.Context) error {
 	if r.Config.OIDCConfig != nil && r.Config.OIDCConfig.AllowOpaqueTokens {
 		allowOpaqueTokens = r.Config.OIDCConfig.AllowOpaqueTokens
 	}
-	authMiddleware, err := auth.GetAuthenticationMiddleware(ctx, r.Config.OIDCConfig, allowOpaqueTokens)
+	authProvider, err := auth.GetAuthenticationProvider(ctx, r.Config.OIDCConfig, allowOpaqueTokens)
 	if err != nil {
-		return fmt.Errorf("failed to create authentication middleware: %v", err)
+		return fmt.Errorf("failed to create authentication provider: %v", err)
 	}
-	transportConfig.Middlewares = append(transportConfig.Middlewares, authMiddleware)
+	transportConfig.Middlewares = append(transportConfig.Middlewares, authProvider.Middleware())
 
 	// Add MCP parsing middleware after authentication
 	logger.Info("MCP parsing middleware enabled for transport")

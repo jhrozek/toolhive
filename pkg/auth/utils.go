@@ -24,10 +24,53 @@ func GetClaimsFromContext(ctx context.Context) (jwt.MapClaims, bool) {
 	return claims, ok
 }
 
-// GetAuthenticationMiddleware returns the appropriate authentication middleware based on the configuration.
-// If OIDC config is provided, it returns JWT middleware. Otherwise, it returns local user middleware.
-func GetAuthenticationMiddleware(ctx context.Context, oidcConfig *TokenValidatorConfig,
-	allowOpaqueTokens bool) (func(http.Handler) http.Handler, error) {
+// AuthenticationProvider defines the interface for providing authentication services.
+// This interface follows the Single Responsibility Principle by separating concerns:
+// - Middleware(): provides request authentication
+// - DiscoveryHandler(): provides OAuth discovery metadata (RFC 9728)
+type AuthenticationProvider interface {
+	// Middleware returns HTTP middleware that authenticates requests
+	Middleware() func(http.Handler) http.Handler
+
+	// DiscoveryHandler returns an HTTP handler for OAuth discovery endpoint.
+	// Returns nil if discovery is not supported by this provider.
+	DiscoveryHandler() http.Handler
+}
+
+// JWTAuthenticationProvider implements AuthenticationProvider for JWT-based authentication
+type JWTAuthenticationProvider struct {
+	validator *TokenValidator
+}
+
+// Middleware returns the JWT validation middleware
+func (p *JWTAuthenticationProvider) Middleware() func(http.Handler) http.Handler {
+	return p.validator.Middleware
+}
+
+// DiscoveryHandler returns the OAuth discovery handler
+func (p *JWTAuthenticationProvider) DiscoveryHandler() http.Handler {
+	return p.validator.AuthInfoHandler()
+}
+
+// LocalAuthenticationProvider implements AuthenticationProvider for local user authentication
+type LocalAuthenticationProvider struct {
+	middleware func(http.Handler) http.Handler
+}
+
+// Middleware returns the local user middleware
+func (p *LocalAuthenticationProvider) Middleware() func(http.Handler) http.Handler {
+	return p.middleware
+}
+
+// DiscoveryHandler returns nil as local authentication doesn't support OAuth discovery
+func (*LocalAuthenticationProvider) DiscoveryHandler() http.Handler {
+	return nil
+}
+
+// GetAuthenticationProvider returns the appropriate authentication provider based on the configuration.
+// If OIDC config is provided, it returns a JWT provider. Otherwise, it returns a local user provider.
+func GetAuthenticationProvider(ctx context.Context, oidcConfig *TokenValidatorConfig,
+	allowOpaqueTokens bool) (AuthenticationProvider, error) {
 	if oidcConfig != nil {
 		logger.Info("OIDC validation enabled")
 
@@ -37,7 +80,7 @@ func GetAuthenticationMiddleware(ctx context.Context, oidcConfig *TokenValidator
 			return nil, err
 		}
 
-		return jwtValidator.Middleware, nil
+		return &JWTAuthenticationProvider{validator: jwtValidator}, nil
 	}
 
 	logger.Info("OIDC validation disabled, using local user authentication")
@@ -46,9 +89,9 @@ func GetAuthenticationMiddleware(ctx context.Context, oidcConfig *TokenValidator
 	currentUser, err := user.Current()
 	if err != nil {
 		logger.Warnf("Failed to get current user, using 'local' as default: %v", err)
-		return LocalUserMiddleware("local"), nil
+		return &LocalAuthenticationProvider{middleware: LocalUserMiddleware("local")}, nil
 	}
 
 	logger.Infof("Using local user authentication for user: %s", currentUser.Username)
-	return LocalUserMiddleware(currentUser.Username), nil
+	return &LocalAuthenticationProvider{middleware: LocalUserMiddleware(currentUser.Username)}, nil
 }
