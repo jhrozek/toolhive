@@ -182,6 +182,7 @@ func NewRunConfigFromFlags(
 	oidcJwksURL string,
 	oidcClientID string,
 	oidcAllowOpaqueTokens bool,
+	resourceURL string,
 	otelEndpoint string,
 	otelServiceName string,
 	otelSamplingRate float64,
@@ -223,6 +224,7 @@ func NewRunConfigFromFlags(
 		WithGroup(groupName).
 		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcClientID, oidcAllowOpaqueTokens,
 			thvCABundle, jwksAuthTokenFile, jwksAllowPrivateIP).
+		WithOAuthDiscovery(resourceURL).
 		WithTelemetryConfig(otelEndpoint, otelEnablePrometheusMetricsPath, otelServiceName,
 			otelSamplingRate, otelHeaders, otelInsecure, otelEnvironmentVariables).
 		WithToolsFilter(toolsFilter).
