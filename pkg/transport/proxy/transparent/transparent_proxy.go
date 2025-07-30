@@ -59,6 +59,9 @@ type TransparentProxy struct {
 	// Optional Prometheus metrics handler
 	prometheusHandler http.Handler
 
+	// Optional auth info handler
+	authInfoHandler http.Handler
+
 	// Sessions for tracking state
 	sessionManager *session.Manager
 
@@ -333,6 +336,12 @@ func (p *TransparentProxy) startServer(ctx context.Context, mux *http.ServeMux) 
 		return fmt.Errorf("failed to listen: %w", err)
 	}
 	p.listener = ln
+
+	// Add auth info endpoint if handler is provided (no middlewares)
+	if p.authInfoHandler != nil {
+		mux.Handle("/.well-known/oauth-protected-resource", p.authInfoHandler)
+		logger.Info("Auth info endpoint enabled at /.well-known/oauth-protected-resource")
+	}
 
 	// Create the server
 	p.server = &http.Server{
