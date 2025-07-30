@@ -198,11 +198,15 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		jwksURL := GetStringFlagOrEmpty(cmd, "oidc-jwks-url")
 		clientID := GetStringFlagOrEmpty(cmd, "oidc-client-id")
 
+		// Construct the server address for the AuthInfoHandler
+		serverAddress := fmt.Sprintf("%s:%d", proxyHost, port)
+
 		oidcConfig = &auth.TokenValidatorConfig{
-			Issuer:   issuer,
-			Audience: audience,
-			JWKSURL:  jwksURL,
-			ClientID: clientID,
+			Issuer:      issuer,
+			Audience:    audience,
+			JWKSURL:     jwksURL,
+			ClientID:    clientID,
+			ResourceURL: serverAddress,
 		}
 	}
 
