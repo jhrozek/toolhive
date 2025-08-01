@@ -9,6 +9,7 @@ import (
 
 	"golang.org/x/exp/jsonrpc2"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 )
@@ -137,8 +138,11 @@ func handleUnauthorized(w http.ResponseWriter, msgID interface{}, err error) {
 //	proxy.Start(context.Background())
 func (a *CedarAuthorizer) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		logger.Infof("Cedar Middleware: Processing request %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
+		
 		// Check if we should skip authorization before checking parsed data
 		if shouldSkipInitialAuthorization(r) {
+			logger.Debugf("Cedar Middleware: Skipping initial authorization for %s %s (non-POST or non-JSON)", r.Method, r.URL.Path)
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -148,12 +152,17 @@ func (a *CedarAuthorizer) Middleware(next http.Handler) http.Handler {
 		if parsedRequest == nil {
 			// No parsed MCP request available for a request that should have been parsed
 			// This indicates either a malformed request or missing parsing middleware
+			logger.Warnf("Cedar Middleware: No parsed MCP request for %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
 			http.Error(w, "Invalid or malformed MCP request", http.StatusBadRequest)
 			return
 		}
 
+		logger.Infof("Cedar Middleware: Parsed MCP method: %s, resource: %s for %s %s", 
+			parsedRequest.Method, parsedRequest.ResourceID, r.Method, r.URL.Path)
+
 		// Check if we should skip authorization after parsing the message
 		if shouldSkipSubsequentAuthorization(parsedRequest.Method) {
+			logger.Debugf("Cedar Middleware: Skipping authorization for method %s", parsedRequest.Method)
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -162,12 +171,17 @@ func (a *CedarAuthorizer) Middleware(next http.Handler) http.Handler {
 		featureOp, ok := MCPMethodToFeatureOperation[parsedRequest.Method]
 		if !ok {
 			// Unknown method, let the next handler deal with it
+			logger.Warnf("Cedar Middleware: Unknown MCP method %s, passing through", parsedRequest.Method)
 			next.ServeHTTP(w, r)
 			return
 		}
 
+		logger.Debugf("Cedar Middleware: Method %s mapped to feature=%s, operation=%s", 
+			parsedRequest.Method, featureOp.Feature, featureOp.Operation)
+
 		// Handle list operations differently - allow them through but filter the response
 		if featureOp.Operation == MCPOperationList {
+			logger.Infof("Cedar Middleware: List operation %s, applying response filtering", parsedRequest.Method)
 			// Create a response filtering writer to intercept and filter the response
 			filteringWriter := NewResponseFilteringWriter(w, a, r, parsedRequest.Method)
 
@@ -179,12 +193,15 @@ func (a *CedarAuthorizer) Middleware(next http.Handler) http.Handler {
 				// If flushing fails, we've already started writing the response,
 				// so we can't return an error response. Just log it.
 				// In a real application, you might want to use a proper logger here.
-				fmt.Printf("Error flushing filtered response: %v\n", err)
+				logger.Errorf("Cedar Middleware: Error flushing filtered response: %v", err)
 			}
 			return
 		}
 
 		// For non-list operations, perform authorization using parsed data
+		logger.Infof("Cedar Middleware: Authorizing %s operation on %s resource %s", 
+			featureOp.Operation, featureOp.Feature, parsedRequest.ResourceID)
+		
 		// Authorize the request
 		authorized, err := a.AuthorizeWithJWTClaims(
 			r.Context(),
@@ -196,9 +213,19 @@ func (a *CedarAuthorizer) Middleware(next http.Handler) http.Handler {
 
 		// Handle unauthorized requests
 		if err != nil || !authorized {
+			if err != nil {
+				logger.Warnf("Cedar Middleware: Authorization failed for %s %s from %s: %v", 
+					r.Method, r.URL.Path, r.RemoteAddr, err)
+			} else {
+				logger.Warnf("Cedar Middleware: Authorization denied for %s %s from %s (method: %s, resource: %s)", 
+					r.Method, r.URL.Path, r.RemoteAddr, parsedRequest.Method, parsedRequest.ResourceID)
+			}
 			handleUnauthorized(w, parsedRequest.ID, err)
 			return
 		}
+
+		logger.Infof("Cedar Middleware: Authorization successful for %s %s, method: %s, resource: %s", 
+			r.Method, r.URL.Path, parsedRequest.Method, parsedRequest.ResourceID)
 
 		// Call the next handler
 		next.ServeHTTP(w, r)

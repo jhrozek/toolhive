@@ -13,7 +13,6 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/versions"
 )
@@ -160,7 +159,7 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, allowOp
 
 	// If JWKS URL is not provided but issuer is, try to discover it
 	if jwksURL == "" && config.Issuer != "" {
-		doc, err := discoverOIDCConfiguration(ctx, config.Issuer, config.CACertPath, config.AuthTokenFile, config.AllowPrivateIP)
+		doc, err := discoverOIDCConfiguration(ctx, config.Issuer, config.CACertPath, config.AuthTokenFile, true)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrFailedToDiscoverOIDC, err)
 		}
@@ -175,7 +174,7 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, allowOp
 	// Create HTTP client with CA bundle and auth token support for JWKS
 	httpClient, err := networking.NewHttpClientBuilder().
 		WithCABundle(config.CACertPath).
-		WithPrivateIPs(config.AllowPrivateIP).
+		WithPrivateIPs(true).
 		WithTokenFromFile(config.AuthTokenFile).
 		Build()
 	if err != nil {
@@ -242,6 +241,7 @@ func (v *TokenValidator) validateClaims(claims jwt.MapClaims) error {
 	if v.issuer != "" {
 		issuer, err := claims.GetIssuer()
 		if err != nil || issuer != v.issuer {
+			logger.Warnf("Token issuer mismatch: expected %s, got %s", v.issuer, issuer)
 			return ErrInvalidIssuer
 		}
 	}
@@ -250,10 +250,12 @@ func (v *TokenValidator) validateClaims(claims jwt.MapClaims) error {
 	if v.audience != "" {
 		audiences, err := claims.GetAudience()
 		if err != nil {
+			logger.Warnf("Token audience claim missing or invalid: %v", err)
 			return ErrInvalidAudience
 		}
 
 		found := false
+		logger.Debugf("Validating token audience: expected %s, got %v", v.audience, audiences)
 		for _, aud := range audiences {
 			if aud == v.audience {
 				found = true
@@ -319,9 +321,12 @@ type ClaimsContextKey struct{}
 // Middleware creates an HTTP middleware that validates JWT tokens.
 func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		logger.Infof("JWT Middleware: Processing request %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
+
 		// Get the token from the Authorization header
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
+			logger.Warnf("JWT Middleware: Missing Authorization header for %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
 			w.Header().Set("WWW-Authenticate", fmt.Sprintf("Bearer realm=\"%s\"", v.issuer))
 			http.Error(w, "Authorization header required", http.StatusUnauthorized)
 			return
@@ -329,6 +334,8 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 
 		// Check if the Authorization header has the Bearer prefix
 		if !strings.HasPrefix(authHeader, "Bearer ") {
+			logger.Warnf("JWT Middleware: Invalid Authorization header format for %s %s from %s (header: %s)",
+				r.Method, r.URL.Path, r.RemoteAddr, authHeader)
 			w.Header().Set("WWW-Authenticate", fmt.Sprintf("Bearer realm=\"%s\"", v.issuer))
 			http.Error(w, "Invalid Authorization header format", http.StatusUnauthorized)
 			return
@@ -336,10 +343,13 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 
 		// Extract the token
 		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+		logger.Debugf("JWT Middleware: Extracted token for %s %s (token length: %d)", r.Method, r.URL.Path, len(tokenString))
 
 		// Validate the token
 		claims, err := v.ValidateToken(r.Context(), tokenString)
 		if err != nil {
+			logger.Warnf("JWT Middleware: Token validation failed for %s %s from %s: %v",
+				r.Method, r.URL.Path, r.RemoteAddr, err)
 			w.Header().Set("WWW-Authenticate", fmt.Sprintf(
 				"Bearer realm=\"%s\", error=\"invalid_token\", error_description=\"%v\"",
 				v.issuer, err,
@@ -347,6 +357,13 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 			http.Error(w, fmt.Sprintf("Invalid token: %v", err), http.StatusUnauthorized)
 			return
 		}
+
+		// Extract subject for logging
+		subject := "unknown"
+		if sub, ok := claims["sub"].(string); ok {
+			subject = sub
+		}
+		logger.Infof("JWT Middleware: Token validated successfully for %s %s, subject: %s", r.Method, r.URL.Path, subject)
 
 		// Add the claims to the request context using a proper key type
 		ctx := context.WithValue(r.Context(), ClaimsContextKey{}, claims)
