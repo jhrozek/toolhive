@@ -39,15 +39,10 @@ type ValidatingTransport struct {
 // RoundTrip validates the request URL prior to forwarding
 func (t *ValidatingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Check for valid URL specification
-	parsedUrl, err := url.Parse(req.URL.String())
+	_, err := url.Parse(req.URL.String())
 	if err != nil {
 		fmt.Print(err)
 		return nil, fmt.Errorf("the supplied URL %s is malformed", req.URL.String())
-	}
-
-	// Check for HTTPS scheme
-	if parsedUrl.Scheme != "https" {
-		return nil, fmt.Errorf("the supplied URL %s is not HTTPS scheme", req.URL.String())
 	}
 
 	return t.Transport.RoundTrip(req)
