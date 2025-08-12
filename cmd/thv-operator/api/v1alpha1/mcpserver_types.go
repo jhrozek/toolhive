@@ -70,6 +70,10 @@ type MCPServerSpec struct {
 	// AuthzConfig defines authorization policy configuration for the MCP server
 	// +optional
 	AuthzConfig *AuthzConfigRef `json:"authzConfig,omitempty"`
+
+	// Observability defines observability configuration for the MCP server proxy
+	// +optional
+	Observability *ObservabilityConfig `json:"observability,omitempty"`
 }
 
 // ResourceOverrides defines overrides for annotations and labels on created resources
@@ -428,6 +432,46 @@ type MCPServer struct {
 
 	Spec   MCPServerSpec   `json:"spec,omitempty"`
 	Status MCPServerStatus `json:"status,omitempty"`
+}
+
+// ObservabilityConfig defines observability settings for the MCP server proxy
+type ObservabilityConfig struct {
+	// MetricsEnabled is a shorthand for enabling Prometheus metrics with defaults
+	// Mutually exclusive with Metrics field
+	// +optional
+	MetricsEnabled *bool `json:"metricsEnabled,omitempty"`
+	
+	// Metrics provides advanced configuration for Prometheus metrics
+	// Mutually exclusive with MetricsEnabled field
+	// +optional
+	Metrics *MetricsConfig `json:"metrics,omitempty"`
+	
+	// OpenTelemetry configuration for traces and OTLP metrics
+	// +optional
+	OpenTelemetry *OpenTelemetryConfig `json:"openTelemetry,omitempty"`
+}
+
+// MetricsConfig defines Prometheus metrics configuration
+type MetricsConfig struct {
+	// Enabled indicates whether Prometheus metrics endpoint is enabled
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled"`
+	
+	// ServiceName overrides the default service name in metrics
+	// Defaults to "{mcpserver-name}-proxy"
+	// +optional
+	ServiceName string `json:"serviceName,omitempty"`
+}
+
+// OpenTelemetryConfig defines OpenTelemetry settings
+type OpenTelemetryConfig struct {
+	// Endpoint is the OTLP endpoint URL (use http:// for insecure connections)
+	// +kubebuilder:validation:Required
+	Endpoint string `json:"endpoint"`
+	
+	// Headers contains authentication headers for OTLP endpoint
+	// +optional
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 //+kubebuilder:object:root=true

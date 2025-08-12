@@ -9,6 +9,7 @@ import (
 	"maps"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -435,6 +436,12 @@ func (r *MCPServerReconciler) deploymentForMCPServer(m *mcpv1alpha1.MCPServer) *
 		args = append(args, authzArgs...)
 	}
 
+	// Add observability configuration args
+	if m.Spec.Observability != nil {
+		obsArgs := r.generateObservabilityArgs(m)
+		args = append(args, obsArgs...)
+	}
+
 	// Add environment variables as --env flags for the MCP server
 	for _, e := range m.Spec.Env {
 		args = append(args, fmt.Sprintf("--env=%s=%s", e.Name, e.Value))
@@ -602,6 +609,22 @@ func (r *MCPServerReconciler) serviceForMCPServer(m *mcpv1alpha1.MCPServer) *cor
 		}
 		if m.Spec.ResourceOverrides.ProxyService.Annotations != nil {
 			serviceAnnotations = mergeAnnotations(make(map[string]string), m.Spec.ResourceOverrides.ProxyService.Annotations)
+		}
+	}
+
+	// Add Prometheus annotations if metrics are enabled
+	if m.Spec.Observability != nil {
+		obs := m.Spec.Observability
+		metricsEnabled := (obs.MetricsEnabled != nil && *obs.MetricsEnabled) || 
+						 (obs.Metrics != nil && obs.Metrics.Enabled)
+		
+		if metricsEnabled {
+			prometheusAnnotations := map[string]string{
+				"prometheus.io/scrape": "true",
+				"prometheus.io/port":   strconv.Itoa(int(m.Spec.Port)),
+				"prometheus.io/path":   "/metrics",
+			}
+			serviceAnnotations = mergeAnnotations(serviceAnnotations, prometheusAnnotations)
 		}
 	}
 
@@ -1234,6 +1257,64 @@ func (*MCPServerReconciler) generateAuthzArgs(m *mcpv1alpha1.MCPServer) []string
 	authzConfigPath := "/etc/toolhive/authz/authz.json"
 	args = append(args, fmt.Sprintf("--authz-config=%s", authzConfigPath))
 
+	return args
+}
+
+// generateObservabilityArgs generates OTEL CLI arguments from observability configuration
+func (r *MCPServerReconciler) generateObservabilityArgs(m *mcpv1alpha1.MCPServer) []string {
+	var args []string
+	
+	if m.Spec.Observability == nil {
+		return args
+	}
+	
+	obs := m.Spec.Observability
+	
+	// Handle metricsEnabled shorthand
+	metricsEnabled := false
+	var serviceName string
+	
+	if obs.MetricsEnabled != nil && *obs.MetricsEnabled {
+		metricsEnabled = true
+		serviceName = fmt.Sprintf("%s-proxy", m.Name) // default
+	} else if obs.Metrics != nil && obs.Metrics.Enabled {
+		metricsEnabled = true
+		if obs.Metrics.ServiceName != "" {
+			serviceName = obs.Metrics.ServiceName
+		} else {
+			serviceName = fmt.Sprintf("%s-proxy", m.Name)
+		}
+	}
+	
+	// Add Prometheus metrics flag
+	if metricsEnabled {
+		args = append(args, "--otel-enable-prometheus-metrics-path")
+		args = append(args, fmt.Sprintf("--otel-service-name=%s", serviceName))
+	}
+	
+	// Add OpenTelemetry configuration with simplified API
+	if obs.OpenTelemetry != nil {
+		otel := obs.OpenTelemetry
+		
+		if otel.Endpoint != "" {
+			args = append(args, fmt.Sprintf("--otel-endpoint=%s", otel.Endpoint))
+			
+			// Auto-detect insecure from http:// protocol
+			if strings.HasPrefix(strings.ToLower(otel.Endpoint), "http://") {
+				args = append(args, "--otel-insecure")
+			}
+		}
+		
+		// Use sensible defaults
+		args = append(args, "--otel-sampling-rate=0.1")
+		args = append(args, "--otel-env-vars=NODE_ENV,DEPLOYMENT_ENV,SERVICE_VERSION")
+		
+		// Add headers
+		for k, v := range otel.Headers {
+			args = append(args, fmt.Sprintf("--otel-headers=%s=%s", k, v))
+		}
+	}
+	
 	return args
 }
 

@@ -123,6 +123,50 @@ spec:
               image:
                 description: Image is the container image for the MCP server
                 type: string
+              observability:
+                description: Observability defines observability configuration for
+                  the MCP server proxy
+                properties:
+                  metrics:
+                    description: |-
+                      Metrics provides advanced configuration for Prometheus metrics
+                      Mutually exclusive with MetricsEnabled field
+                    properties:
+                      enabled:
+                        default: false
+                        description: Enabled indicates whether Prometheus metrics
+                          endpoint is enabled
+                        type: boolean
+                      serviceName:
+                        description: |-
+                          ServiceName overrides the default service name in metrics
+                          Defaults to "{mcpserver-name}-proxy"
+                        type: string
+                    required:
+                    - enabled
+                    type: object
+                  metricsEnabled:
+                    description: |-
+                      MetricsEnabled is a shorthand for enabling Prometheus metrics with defaults
+                      Mutually exclusive with Metrics field
+                    type: boolean
+                  openTelemetry:
+                    description: OpenTelemetry configuration for traces and OTLP metrics
+                    properties:
+                      endpoint:
+                        description: Endpoint is the OTLP endpoint URL (use http://
+                          for insecure connections)
+                        type: string
+                      headers:
+                        additionalProperties:
+                          type: string
+                        description: Headers contains authentication headers for OTLP
+                          endpoint
+                        type: object
+                    required:
+                    - endpoint
+                    type: object
+                type: object
               oidcConfig:
                 description: OIDCConfig defines OIDC authentication configuration
                   for the MCP server
