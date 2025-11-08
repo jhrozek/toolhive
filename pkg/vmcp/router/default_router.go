@@ -42,6 +42,11 @@ func routeCapability(
 	entityType string,
 	notFoundErr error,
 ) (*vmcp.BackendTarget, error) {
+	// Defensive nil check - prevent panic if context is nil
+	if ctx == nil {
+		return nil, fmt.Errorf("context cannot be nil")
+	}
+
 	// Get capabilities from context (set by discovery middleware)
 	capabilities, ok := discovery.DiscoveredCapabilitiesFromContext(ctx)
 	if !ok || capabilities == nil {

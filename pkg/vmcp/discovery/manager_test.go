@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	aggmocks "github.com/stacklok/toolhive/pkg/vmcp/aggregator/mocks"
@@ -62,10 +63,36 @@ func TestDefaultManager_Discover(t *testing.T) {
 		mgr, err := NewManager(mockAgg)
 		require.NoError(t, err)
 
-		caps, err := mgr.Discover(context.Background(), backends)
+		// Create context with user identity
+		identity := &auth.Identity{Subject: "user123", Name: "Test User"}
+		ctx := auth.WithIdentity(context.Background(), identity)
+
+		caps, err := mgr.Discover(ctx, backends)
 
 		require.NoError(t, err)
 		assert.Equal(t, expectedCaps, caps)
+	})
+
+	t.Run("error when user identity missing from context", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockAgg := aggmocks.NewMockAggregator(ctrl)
+		backends := []vmcp.Backend{newTestBackend("backend1")}
+
+		// No expectation on mockAgg - should fail before calling aggregator
+
+		mgr, err := NewManager(mockAgg)
+		require.NoError(t, err)
+
+		// Use context without user identity
+		caps, err := mgr.Discover(context.Background(), backends)
+
+		require.Error(t, err)
+		assert.Nil(t, caps)
+		assert.ErrorIs(t, err, ErrNoIdentity)
+		assert.Contains(t, err.Error(), "ensure auth middleware runs before discovery middleware")
 	})
 
 	t.Run("discovery failure from aggregator", func(t *testing.T) {
@@ -87,7 +114,11 @@ func TestDefaultManager_Discover(t *testing.T) {
 		mgr, err := NewManager(mockAgg)
 		require.NoError(t, err)
 
-		caps, err := mgr.Discover(context.Background(), backends)
+		// Create context with user identity
+		identity := &auth.Identity{Subject: "user456"}
+		ctx := auth.WithIdentity(context.Background(), identity)
+
+		caps, err := mgr.Discover(ctx, backends)
 
 		require.Error(t, err)
 		assert.Nil(t, caps)

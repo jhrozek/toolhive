@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 )
@@ -21,6 +23,8 @@ var (
 	ErrAggregatorNil = errors.New("aggregator cannot be nil")
 	// ErrDiscoveryFailed is returned when capability discovery fails.
 	ErrDiscoveryFailed = errors.New("capability discovery failed")
+	// ErrNoIdentity is returned when user identity is not found in context.
+	ErrNoIdentity = errors.New("user identity not found in context")
 )
 
 // Manager performs capability discovery with user context.
@@ -45,7 +49,19 @@ func NewManager(agg aggregator.Aggregator) (Manager, error) {
 }
 
 // Discover performs capability aggregation by delegating to the aggregator.
+//
+// The context must contain an authenticated user identity (set by auth middleware).
+// Returns ErrNoIdentity if user identity is not found in context.
 func (m *DefaultManager) Discover(ctx context.Context, backends []vmcp.Backend) (*aggregator.AggregatedCapabilities, error) {
+	// Validate user identity is present (set by auth middleware)
+	// This ensures discovery happens with proper user authentication context
+	identity, ok := auth.IdentityFromContext(ctx)
+	if !ok {
+		return nil, fmt.Errorf("%w: ensure auth middleware runs before discovery middleware", ErrNoIdentity)
+	}
+
+	logger.Debugf("Performing capability discovery for user: %s", identity.Subject)
+
 	caps, err := m.aggregator.AggregateCapabilities(ctx, backends)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrDiscoveryFailed, err)
