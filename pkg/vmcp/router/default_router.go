@@ -3,44 +3,45 @@ package router
 import (
 	"context"
 	"fmt"
-	"sync"
 
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 )
 
-// defaultRouter is a simple router implementation that uses a RoutingTable
-// to map capability names to backend targets.
+// defaultRouter is a stateless router implementation that retrieves routing
+// information from the request context. With lazy discovery, capabilities are
+// discovered per-request and stored in context by the discovery middleware.
 //
-// It is safe for concurrent use through RWMutex locking.
-// The RWMutex provides flexibility for both wholesale table replacement
-// and future fine-grained updates (e.g., adding/removing individual backends).
+// This router is thread-safe by design since it maintains no mutable state.
 type defaultRouter struct {
-	mu           sync.RWMutex
-	routingTable *vmcp.RoutingTable
+	// No fields - routing table comes from request context
 }
 
 // NewDefaultRouter creates a new default router instance.
-// The router initially has no routing table and will return errors
-// until UpdateRoutingTable is called.
 func NewDefaultRouter() Router {
 	return &defaultRouter{}
 }
 
 // RouteTool resolves a tool name to its backend target.
-func (r *defaultRouter) RouteTool(_ context.Context, toolName string) (*vmcp.BackendTarget, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	if r.routingTable == nil {
-		return nil, fmt.Errorf("routing table not initialized")
+// With lazy discovery, this method gets capabilities from the request context
+// instead of using a cached routing table.
+func (*defaultRouter) RouteTool(ctx context.Context, toolName string) (*vmcp.BackendTarget, error) {
+	// Get capabilities from context (set by discovery middleware)
+	capabilities, ok := discovery.DiscoveredCapabilitiesFromContext(ctx)
+	if !ok || capabilities == nil {
+		return nil, fmt.Errorf("capabilities not found in context - discovery middleware may not have run")
 	}
 
-	if r.routingTable.Tools == nil {
+	if capabilities.RoutingTable == nil {
+		return nil, fmt.Errorf("routing table not initialized in discovered capabilities")
+	}
+
+	if capabilities.RoutingTable.Tools == nil {
 		return nil, fmt.Errorf("routing table tools map not initialized")
 	}
 
-	target, exists := r.routingTable.Tools[toolName]
+	target, exists := capabilities.RoutingTable.Tools[toolName]
 	if !exists {
 		logger.Debugf("Tool not found in routing table: %s", toolName)
 		return nil, fmt.Errorf("%w: %s", ErrToolNotFound, toolName)
@@ -51,19 +52,24 @@ func (r *defaultRouter) RouteTool(_ context.Context, toolName string) (*vmcp.Bac
 }
 
 // RouteResource resolves a resource URI to its backend target.
-func (r *defaultRouter) RouteResource(_ context.Context, uri string) (*vmcp.BackendTarget, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	if r.routingTable == nil {
-		return nil, fmt.Errorf("routing table not initialized")
+// With lazy discovery, this method gets capabilities from the request context
+// instead of using a cached routing table.
+func (*defaultRouter) RouteResource(ctx context.Context, uri string) (*vmcp.BackendTarget, error) {
+	// Get capabilities from context (set by discovery middleware)
+	capabilities, ok := discovery.DiscoveredCapabilitiesFromContext(ctx)
+	if !ok || capabilities == nil {
+		return nil, fmt.Errorf("capabilities not found in context - discovery middleware may not have run")
 	}
 
-	if r.routingTable.Resources == nil {
+	if capabilities.RoutingTable == nil {
+		return nil, fmt.Errorf("routing table not initialized in discovered capabilities")
+	}
+
+	if capabilities.RoutingTable.Resources == nil {
 		return nil, fmt.Errorf("routing table resources map not initialized")
 	}
 
-	target, exists := r.routingTable.Resources[uri]
+	target, exists := capabilities.RoutingTable.Resources[uri]
 	if !exists {
 		logger.Debugf("Resource not found in routing table: %s", uri)
 		return nil, fmt.Errorf("%w: %s", ErrResourceNotFound, uri)
@@ -74,19 +80,24 @@ func (r *defaultRouter) RouteResource(_ context.Context, uri string) (*vmcp.Back
 }
 
 // RoutePrompt resolves a prompt name to its backend target.
-func (r *defaultRouter) RoutePrompt(_ context.Context, name string) (*vmcp.BackendTarget, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	if r.routingTable == nil {
-		return nil, fmt.Errorf("routing table not initialized")
+// With lazy discovery, this method gets capabilities from the request context
+// instead of using a cached routing table.
+func (*defaultRouter) RoutePrompt(ctx context.Context, name string) (*vmcp.BackendTarget, error) {
+	// Get capabilities from context (set by discovery middleware)
+	capabilities, ok := discovery.DiscoveredCapabilitiesFromContext(ctx)
+	if !ok || capabilities == nil {
+		return nil, fmt.Errorf("capabilities not found in context - discovery middleware may not have run")
 	}
 
-	if r.routingTable.Prompts == nil {
+	if capabilities.RoutingTable == nil {
+		return nil, fmt.Errorf("routing table not initialized in discovered capabilities")
+	}
+
+	if capabilities.RoutingTable.Prompts == nil {
 		return nil, fmt.Errorf("routing table prompts map not initialized")
 	}
 
-	target, exists := r.routingTable.Prompts[name]
+	target, exists := capabilities.RoutingTable.Prompts[name]
 	if !exists {
 		logger.Debugf("Prompt not found in routing table: %s", name)
 		return nil, fmt.Errorf("%w: %s", ErrPromptNotFound, name)
@@ -94,25 +105,4 @@ func (r *defaultRouter) RoutePrompt(_ context.Context, name string) (*vmcp.Backe
 
 	logger.Debugf("Routed prompt %s to backend %s", name, target.WorkloadID)
 	return target, nil
-}
-
-// UpdateRoutingTable updates the router's internal routing table.
-// This is called after capability aggregation completes with the
-// merged routing information.
-//
-// The update is atomic - all lookups see either the old table or the new table.
-func (r *defaultRouter) UpdateRoutingTable(_ context.Context, table *vmcp.RoutingTable) error {
-	if table == nil {
-		return fmt.Errorf("routing table cannot be nil")
-	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	r.routingTable = table
-
-	logger.Infof("Updated routing table: %d tools, %d resources, %d prompts",
-		len(table.Tools), len(table.Resources), len(table.Prompts))
-
-	return nil
 }
