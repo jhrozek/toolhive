@@ -477,11 +477,19 @@ func (s *Server) injectCapabilities(
 	}
 
 	// Note: SDK v0.43.0 does not support per-session prompts yet.
-	// Prompts would need to be added globally via mcpServer.AddPrompt()
+	// Per-session prompts are required to maintain multi-tenant security isolation.
+	// Prompts cannot be registered globally via mcpServer.AddPrompt() without leaking
+	// capability information across session boundaries (e.g., admin prompts visible to regular users).
 	if len(caps.Prompts) > 0 {
-		logger.Debugw("skipping prompts - SDK does not support per-session prompts yet",
+		logger.Warnw("prompts discovered but not exposed - awaiting SDK support for per-session prompts",
 			"session_id", sessionID,
-			"prompt_count", len(caps.Prompts))
+			"prompt_count", len(caps.Prompts),
+			"sdk_version", "v0.43.0",
+			"required_api", "AddSessionPrompts()",
+			"reason", "multi-tenant security requires per-session capability isolation")
+		// TODO(prompts): Implement when mark3labs/mcp-go adds AddSessionPrompts() API
+		// Conversion logic already exists in capability_adapter.ToSDKPrompts()
+		// Implementation will be: s.mcpServer.AddSessionPrompts(sessionID, sdkPrompts...)
 	}
 
 	logger.Infow("session capabilities injected during initialization",
