@@ -20,11 +20,12 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/transport/session"
+	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/adapter"
+	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
 
 const (
@@ -119,7 +120,7 @@ type Server struct {
 	//   - Session lifecycle management
 	// The mark3labs SDK calls our sessionIDAdapter, which delegates to this manager.
 	// The SDK does NOT manage sessions itself - it only provides the interface.
-	sessionManager *session.Manager
+	sessionManager *transportsession.Manager
 
 	// Injector for adding capabilities to SDK sessions
 	injector *SessionCapabilityInjector
@@ -172,8 +173,9 @@ func New(
 		server.WithHooks(hooks),
 	)
 
-	// Create session manager for Streamable HTTP sessions
-	sessionManager := session.NewTypedManager(cfg.SessionTTL, session.SessionTypeStreamable)
+	// Create session manager with VMCPSession factory
+	// This enables type-safe access to routing tables while maintaining session lifecycle management
+	sessionManager := transportsession.NewManager(cfg.SessionTTL, vmcpsession.VMCPSessionFactory())
 
 	// Create handler factory (used by adapter and for future dynamic registration)
 	handlerFactory := adapter.NewDefaultHandlerFactory(rt, backendClient)
@@ -226,6 +228,27 @@ func New(
 
 		logger.Infow("session capabilities injected via injector",
 			"session_id", sessionID)
+
+		// Store routing table in VMCPSession for subsequent requests
+		// This enables the middleware to reconstruct capabilities from session
+		// without re-running discovery for every request.
+		if sess, ok := sessionManager.Get(sessionID); ok {
+			if vmcpSess, ok := sess.(*vmcpsession.VMCPSession); ok {
+				vmcpSess.SetRoutingTable(caps.RoutingTable)
+				logger.Debugw("routing table stored in VMCPSession",
+					"session_id", sessionID,
+					"tool_count", len(caps.RoutingTable.Tools),
+					"resource_count", len(caps.RoutingTable.Resources),
+					"prompt_count", len(caps.RoutingTable.Prompts))
+			} else {
+				logger.Errorw("session is not a VMCPSession - factory misconfiguration",
+					"session_id", sessionID,
+					"actual_type", fmt.Sprintf("%T", sess))
+			}
+		} else {
+			logger.Warnw("session not found when storing routing table",
+				"session_id", sessionID)
+		}
 	})
 
 	return srv
@@ -264,7 +287,8 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Apply discovery middleware (runs after auth middleware)
 	// Discovery middleware performs per-request capability aggregation with user context
-	mcpHandler = discovery.Middleware(s.discoveryMgr, s.backends)(mcpHandler)
+	// Pass sessionManager to enable session-based capability retrieval for subsequent requests
+	mcpHandler = discovery.Middleware(s.discoveryMgr, s.backends, s.sessionManager)(mcpHandler)
 	logger.Info("Discovery middleware enabled for lazy per-user capability discovery")
 
 	// Apply authentication middleware if configured (runs first in chain)
@@ -496,7 +520,7 @@ func (*Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 
 // SessionManager returns the session manager instance.
 // This is useful for testing and monitoring.
-func (s *Server) SessionManager() *session.Manager {
+func (s *Server) SessionManager() *transportsession.Manager {
 	return s.sessionManager
 }
 

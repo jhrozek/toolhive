@@ -13,10 +13,20 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery/mocks"
+	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
+
+// createTestSessionManager creates a session manager with VMCPSession factory for testing.
+func createTestSessionManager(t *testing.T) *transportsession.Manager {
+	t.Helper()
+	sessionMgr := transportsession.NewManager(30*time.Minute, vmcpsession.VMCPSessionFactory())
+	t.Cleanup(func() { _ = sessionMgr.Stop() })
+	return sessionMgr
+}
 
 func TestMiddleware_InitializeRequest(t *testing.T) {
 	t.Parallel()
@@ -76,7 +86,7 @@ func TestMiddleware_InitializeRequest(t *testing.T) {
 	})
 
 	// Wrap handler with middleware
-	middleware := Middleware(mockMgr, backends)
+	middleware := Middleware(mockMgr, backends, createTestSessionManager(t))
 	wrappedHandler := middleware(testHandler)
 
 	// Create initialize request (no session ID header)
@@ -117,17 +127,35 @@ func TestMiddleware_SubsequentRequest_SkipsDiscovery(t *testing.T) {
 	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handlerCalled = true
 
-		// Verify NO capabilities in context (they were not discovered)
+		// Verify capabilities ARE in context (retrieved from session, not discovered)
 		caps, ok := DiscoveredCapabilitiesFromContext(r.Context())
-		assert.False(t, ok, "capabilities should NOT be in context for subsequent request")
-		assert.Nil(t, caps, "capabilities should be nil for subsequent request")
+		assert.True(t, ok, "capabilities should be in context from session")
+		assert.NotNil(t, caps, "capabilities should not be nil")
+		assert.NotNil(t, caps.RoutingTable, "routing table should not be nil")
+		assert.Len(t, caps.RoutingTable.Tools, 1, "should have 1 tool from session")
 
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("success"))
 	})
 
+	// Create session manager and store routing table in a session
+	sessionMgr := createTestSessionManager(t)
+
+	// Create a routing table for this session
+	routingTable := &vmcp.RoutingTable{
+		Tools:     map[string]*vmcp.BackendTarget{"tool1": {WorkloadID: "backend1"}},
+		Resources: make(map[string]*vmcp.BackendTarget),
+		Prompts:   make(map[string]*vmcp.BackendTarget),
+	}
+
+	// Add session with routing table
+	sess := vmcpsession.NewVMCPSession("test-session-123")
+	sess.SetRoutingTable(routingTable)
+	err := sessionMgr.AddSession(sess)
+	require.NoError(t, err, "failed to add session")
+
 	// Wrap handler with middleware
-	middleware := Middleware(mockMgr, backends)
+	middleware := Middleware(mockMgr, backends, sessionMgr)
 	wrappedHandler := middleware(testHandler)
 
 	// Create subsequent request (with session ID header)
@@ -167,7 +195,7 @@ func TestMiddleware_DiscoveryTimeout(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := Middleware(mockMgr, backends)
+	middleware := Middleware(mockMgr, backends, createTestSessionManager(t))
 	wrappedHandler := middleware(testHandler)
 
 	// Initialize request (no session ID) - discovery should happen
@@ -207,7 +235,7 @@ func TestMiddleware_DiscoveryFailure(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := Middleware(mockMgr, backends)
+	middleware := Middleware(mockMgr, backends, createTestSessionManager(t))
 	wrappedHandler := middleware(testHandler)
 
 	// Initialize request (no session ID) - discovery should happen
@@ -307,7 +335,7 @@ func TestMiddleware_CapabilitiesInContext(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := Middleware(mockMgr, backends)
+	middleware := Middleware(mockMgr, backends, createTestSessionManager(t))
 	wrappedHandler := middleware(testHandler)
 
 	// Initialize request (no session ID) - discovery should happen
@@ -371,7 +399,7 @@ func TestMiddleware_PreservesUserContext(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := Middleware(mockMgr, backends)
+	middleware := Middleware(mockMgr, backends, createTestSessionManager(t))
 	wrappedHandler := middleware(testHandler)
 
 	// Create initialize request with user context (as auth middleware would)
@@ -423,7 +451,7 @@ func TestMiddleware_ContextTimeoutHandling(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := Middleware(mockMgr, backends)
+	middleware := Middleware(mockMgr, backends, createTestSessionManager(t))
 	wrappedHandler := middleware(testHandler)
 
 	// Initialize request (no session ID) - discovery should happen

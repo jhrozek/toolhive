@@ -72,7 +72,9 @@ func NewDefaultHandlerFactory(rt router.Router, backendClient vmcp.BackendClient
 
 // CreateToolHandler creates a tool handler that routes to the appropriate backend.
 // Called by CapabilityAdapter to create handlers for discovered tools.
-func (f *DefaultHandlerFactory) CreateToolHandler(toolName string) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (f *DefaultHandlerFactory) CreateToolHandler(
+	toolName string,
+) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		logger.Debugf("Handling tool call: %s", toolName)
 
