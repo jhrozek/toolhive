@@ -203,6 +203,12 @@ func New(
 	//
 	// The discovery middleware populates capabilities in the context, which is available here.
 	// We inject them into the SDK session and store the routing table for subsequent requests.
+	//
+	// IMPORTANT: Session capabilities are immutable after injection.
+	// - Capabilities discovered during initialize are fixed for the session lifetime
+	// - Backend changes (new tools, removed resources) won't be reflected in existing sessions
+	// - Clients must create new sessions to see updated capabilities
+	// TODO(dynamic-capabilities): Consider implementing capability refresh mechanism when SDK supports it
 	hooks.AddOnRegisterSession(func(ctx context.Context, session server.ClientSession) {
 		sessionID := session.SessionID()
 		logger.Debugw("OnRegisterSession hook called", "session_id", sessionID)
@@ -445,8 +451,14 @@ func (s *Server) Ready() <-chan struct{} {
 // Important constraints:
 //   - Called only during session creation (session state is empty)
 //   - No previous capabilities exist, so no deletion needed
-//   - Capabilities are immutable for the session lifetime
+//   - Capabilities are IMMUTABLE for the session lifetime (see limitation below)
 //   - Discovery middleware does not re-run for subsequent requests
+//
+// LIMITATION: Session capabilities are fixed at creation time.
+// If backends change (new tools added, resources removed), existing sessions won't see updates.
+// Clients must create new sessions to discover updated capabilities.
+// This is a deliberate design choice to avoid notification spam and maintain simplicity.
+// Future enhancement: Implement capability refresh mechanism when SDK provides support.
 //
 // Note: SDK v0.43.0 does not support per-session prompts yet.
 func (s *Server) injectCapabilities(
