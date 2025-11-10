@@ -401,14 +401,15 @@ func TestIntegration_HTTPRequestFlowWithRoutingTable(t *testing.T) {
 
 	t.Logf("Routing table has %d tools", len(routingTable.Tools))
 	require.NotNil(t, routingTable, "Routing table should be stored")
-	require.Contains(t, routingTable.Tools, "test_tool", "Routing table should have test_tool")
+	// Note: Tool name is prefixed with backend ID due to conflict resolution
+	require.Contains(t, routingTable.Tools, "test-backend_test_tool", "Routing table should have prefixed test_tool")
 
 	// STEP 2: Send tool call request (with session ID)
 	t.Log("Sending tool call request")
 	toolCallReq := map[string]any{
 		"method": "tools/call",
 		"params": map[string]any{
-			"name":      "test_tool",
+			"name":      "test-backend_test_tool", // Prefixed name from conflict resolution
 			"arguments": map[string]any{"input": "test"},
 		},
 	}

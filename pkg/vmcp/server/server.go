@@ -22,6 +22,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/adapter"
@@ -122,8 +123,8 @@ type Server struct {
 	// The SDK does NOT manage sessions itself - it only provides the interface.
 	sessionManager *transportsession.Manager
 
-	// Injector for adding capabilities to SDK sessions
-	injector *SessionCapabilityInjector
+	// Capability adapter for converting aggregator types to SDK types
+	capabilityAdapter *adapter.CapabilityAdapter
 
 	// Ready channel signals when the server is ready to accept connections.
 	// Closed once the listener is created and serving.
@@ -180,23 +181,22 @@ func New(
 	// Create handler factory (used by adapter and for future dynamic registration)
 	handlerFactory := adapter.NewDefaultHandlerFactory(rt, backendClient)
 
+	// Create capability adapter (single source of truth for converting aggregator types to SDK types)
+	capabilityAdapter := adapter.NewCapabilityAdapter(handlerFactory)
+
 	// Create Server instance
 	srv := &Server{
-		config:         cfg,
-		mcpServer:      mcpServer,
-		router:         rt,
-		backendClient:  backendClient,
-		handlerFactory: handlerFactory,
-		discoveryMgr:   discoveryMgr,
-		backends:       backends,
-		sessionManager: sessionManager,
-		ready:          make(chan struct{}),
+		config:            cfg,
+		mcpServer:         mcpServer,
+		router:            rt,
+		backendClient:     backendClient,
+		handlerFactory:    handlerFactory,
+		discoveryMgr:      discoveryMgr,
+		backends:          backends,
+		sessionManager:    sessionManager,
+		capabilityAdapter: capabilityAdapter,
+		ready:             make(chan struct{}),
 	}
-
-	// Create adapter (single source of truth for capability injection)
-	capabilityAdapter := adapter.NewCapabilityAdapter(handlerFactory)
-	injector := NewSessionCapabilityInjector(mcpServer, capabilityAdapter)
-	srv.injector = injector
 
 	// Register OnRegisterSession hook to inject capabilities after SDK registers session.
 	// This hook fires AFTER the session is registered in the SDK (unlike AfterInitialize which
@@ -237,8 +237,8 @@ func New(
 				"session_id", sessionID)
 		}
 
-		// Inject capabilities via injector (single source of truth for SDK capability registration)
-		if err := injector.InjectCapabilities(sessionID, caps); err != nil {
+		// Inject capabilities into SDK session
+		if err := srv.injectCapabilities(sessionID, caps); err != nil {
 			logger.Errorw("failed to inject session capabilities",
 				"error", err,
 				"session_id", sessionID)
@@ -528,4 +528,61 @@ func (s *Server) SessionManager() *transportsession.Manager {
 // This is useful for testing and synchronization.
 func (s *Server) Ready() <-chan struct{} {
 	return s.ready
+}
+
+// injectCapabilities injects capabilities into a newly created SDK session.
+//
+// This method is called ONCE per session during the OnRegisterSession hook, when the
+// session has just been created by the SDK and is empty. It:
+//  1. Converts aggregator types to SDK types using adapter
+//  2. Adds discovered capabilities via SDK APIs (AddSessionTools, AddSessionResources)
+//
+// Important constraints:
+//   - Called only during session creation (session state is empty)
+//   - No previous capabilities exist, so no deletion needed
+//   - Capabilities are immutable for the session lifetime
+//   - Discovery middleware does not re-run for subsequent requests
+//
+// Note: SDK v0.43.0 does not support per-session prompts yet.
+func (s *Server) injectCapabilities(
+	sessionID string,
+	caps *aggregator.AggregatedCapabilities,
+) error {
+	// Convert and add tools
+	if len(caps.Tools) > 0 {
+		sdkTools, err := s.capabilityAdapter.ToSDKTools(caps.Tools)
+		if err != nil {
+			return fmt.Errorf("failed to convert tools to SDK format: %w", err)
+		}
+
+		if err := s.mcpServer.AddSessionTools(sessionID, sdkTools...); err != nil {
+			return fmt.Errorf("failed to add session tools: %w", err)
+		}
+		logger.Debugw("added session tools", "session_id", sessionID, "count", len(sdkTools))
+	}
+
+	// Convert and add resources
+	if len(caps.Resources) > 0 {
+		sdkResources := s.capabilityAdapter.ToSDKResources(caps.Resources)
+
+		if err := s.mcpServer.AddSessionResources(sessionID, sdkResources...); err != nil {
+			return fmt.Errorf("failed to add session resources: %w", err)
+		}
+		logger.Debugw("added session resources", "session_id", sessionID, "count", len(sdkResources))
+	}
+
+	// Note: SDK v0.43.0 does not support per-session prompts yet.
+	// Prompts would need to be added globally via mcpServer.AddPrompt()
+	if len(caps.Prompts) > 0 {
+		logger.Debugw("skipping prompts - SDK does not support per-session prompts yet",
+			"session_id", sessionID,
+			"prompt_count", len(caps.Prompts))
+	}
+
+	logger.Infow("session capabilities injected during initialization",
+		"session_id", sessionID,
+		"tools", len(caps.Tools),
+		"resources", len(caps.Resources))
+
+	return nil
 }
