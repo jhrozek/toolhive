@@ -18,14 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery/mocks"
 )
 
-// mockPopulator is a simple test implementation of CapabilityPopulator
-type mockPopulator struct{}
-
-func (*mockPopulator) PopulateCapabilities(_ string, _ *aggregator.AggregatedCapabilities) error {
-	return nil
-}
-
-func TestMiddleware_Success(t *testing.T) {
+func TestMiddleware_InitializeRequest(t *testing.T) {
 	t.Parallel()
 
 	ctrl := gomock.NewController(t)
@@ -62,6 +55,7 @@ func TestMiddleware_Success(t *testing.T) {
 		},
 	}
 
+	// Expect discovery to be called for initialize request (no session ID)
 	mockMgr.EXPECT().
 		Discover(gomock.Any(), backends).
 		Return(expectedCaps, nil)
@@ -82,11 +76,63 @@ func TestMiddleware_Success(t *testing.T) {
 	})
 
 	// Wrap handler with middleware
-	middleware := Middleware(mockMgr, backends, &mockPopulator{})
+	middleware := Middleware(mockMgr, backends)
 	wrappedHandler := middleware(testHandler)
 
-	// Create test request
+	// Create initialize request (no session ID header)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/v1/initialize", nil)
+	rec := httptest.NewRecorder()
+
+	// Execute request
+	wrappedHandler.ServeHTTP(rec, req)
+
+	// Verify response
+	assert.True(t, handlerCalled, "handler should have been called")
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "success", rec.Body.String())
+}
+
+func TestMiddleware_SubsequentRequest_SkipsDiscovery(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockMgr := mocks.NewMockManager(ctrl)
+
+	backends := []vmcp.Backend{
+		{
+			ID:            "backend1",
+			Name:          "Backend 1",
+			BaseURL:       "http://backend1:8080",
+			TransportType: "streamable-http",
+			HealthStatus:  vmcp.BackendHealthy,
+		},
+	}
+
+	// NO EXPECTATION for Discover - it should not be called for subsequent requests
+	// If Discover is called, the test will fail due to unexpected call
+
+	handlerCalled := false
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+
+		// Verify NO capabilities in context (they were not discovered)
+		caps, ok := DiscoveredCapabilitiesFromContext(r.Context())
+		assert.False(t, ok, "capabilities should NOT be in context for subsequent request")
+		assert.Nil(t, caps, "capabilities should be nil for subsequent request")
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("success"))
+	})
+
+	// Wrap handler with middleware
+	middleware := Middleware(mockMgr, backends)
+	wrappedHandler := middleware(testHandler)
+
+	// Create subsequent request (with session ID header)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/v1/tools/list", nil)
+	req.Header.Set("Mcp-Session-Id", "test-session-123")
 	rec := httptest.NewRecorder()
 
 	// Execute request
@@ -121,10 +167,11 @@ func TestMiddleware_DiscoveryTimeout(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := Middleware(mockMgr, backends, &mockPopulator{})
+	middleware := Middleware(mockMgr, backends)
 	wrappedHandler := middleware(testHandler)
 
-	req := httptest.NewRequest(http.MethodPost, "/mcp/v1/tools/list", nil)
+	// Initialize request (no session ID) - discovery should happen
+	req := httptest.NewRequest(http.MethodPost, "/mcp/v1/initialize", nil)
 	rec := httptest.NewRecorder()
 
 	wrappedHandler.ServeHTTP(rec, req)
@@ -160,10 +207,11 @@ func TestMiddleware_DiscoveryFailure(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := Middleware(mockMgr, backends, &mockPopulator{})
+	middleware := Middleware(mockMgr, backends)
 	wrappedHandler := middleware(testHandler)
 
-	req := httptest.NewRequest(http.MethodPost, "/mcp/v1/tools/list", nil)
+	// Initialize request (no session ID) - discovery should happen
+	req := httptest.NewRequest(http.MethodPost, "/mcp/v1/initialize", nil)
 	rec := httptest.NewRecorder()
 
 	wrappedHandler.ServeHTTP(rec, req)
@@ -259,10 +307,11 @@ func TestMiddleware_CapabilitiesInContext(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := Middleware(mockMgr, backends, &mockPopulator{})
+	middleware := Middleware(mockMgr, backends)
 	wrappedHandler := middleware(testHandler)
 
-	req := httptest.NewRequest(http.MethodPost, "/mcp/v1/tools/list", nil)
+	// Initialize request (no session ID) - discovery should happen
+	req := httptest.NewRequest(http.MethodPost, "/mcp/v1/initialize", nil)
 	rec := httptest.NewRecorder()
 
 	wrappedHandler.ServeHTTP(rec, req)
@@ -322,11 +371,11 @@ func TestMiddleware_PreservesUserContext(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := Middleware(mockMgr, backends, &mockPopulator{})
+	middleware := Middleware(mockMgr, backends)
 	wrappedHandler := middleware(testHandler)
 
-	// Create request with user context (as auth middleware would)
-	req := httptest.NewRequest(http.MethodPost, "/mcp/v1/tools/list", nil)
+	// Create initialize request with user context (as auth middleware would)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/v1/initialize", nil)
 	ctx := context.WithValue(req.Context(), userIDKey("user_id"), "test_user")
 	req = req.WithContext(ctx)
 
@@ -359,12 +408,12 @@ func TestMiddleware_ContextTimeoutHandling(t *testing.T) {
 			assert.True(t, time.Until(deadline) <= discoveryTimeout, "timeout should be set correctly")
 
 			// Simulate slow operation that exceeds the timeout
-			// The 5-second timeout will expire before this 10-second sleep completes
+			// The 15-second timeout will expire before this 20-second sleep completes
 			select {
 			case <-ctx.Done():
 				// Context was cancelled (either timeout or cancellation)
 				return nil, ctx.Err()
-			case <-time.After(10 * time.Second):
+			case <-time.After(20 * time.Second):
 				// This should never be reached because context times out first
 				return nil, errors.New("operation completed without timeout")
 			}
@@ -374,10 +423,11 @@ func TestMiddleware_ContextTimeoutHandling(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := Middleware(mockMgr, backends, &mockPopulator{})
+	middleware := Middleware(mockMgr, backends)
 	wrappedHandler := middleware(testHandler)
 
-	req := httptest.NewRequest(http.MethodPost, "/mcp/v1/tools/list", nil)
+	// Initialize request (no session ID) - discovery should happen
+	req := httptest.NewRequest(http.MethodPost, "/mcp/v1/initialize", nil)
 	rec := httptest.NewRecorder()
 
 	wrappedHandler.ServeHTTP(rec, req)

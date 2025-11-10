@@ -22,7 +22,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
-	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/adapter"
@@ -218,7 +217,7 @@ func New(
 		}
 
 		// Delegate to injector (single source of truth)
-		if err := injector.PopulateCapabilities(sessionID, caps); err != nil {
+		if err := injector.InjectCapabilities(sessionID, caps); err != nil {
 			logger.Errorw("failed to inject session capabilities",
 				"error", err,
 				"session_id", sessionID)
@@ -265,7 +264,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Apply discovery middleware (runs after auth middleware)
 	// Discovery middleware performs per-request capability aggregation with user context
-	mcpHandler = discovery.Middleware(s.discoveryMgr, s.backends, s)(mcpHandler)
+	mcpHandler = discovery.Middleware(s.discoveryMgr, s.backends)(mcpHandler)
 	logger.Info("Discovery middleware enabled for lazy per-user capability discovery")
 
 	// Apply authentication middleware if configured (runs first in chain)
@@ -499,13 +498,6 @@ func (*Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 // This is useful for testing and monitoring.
 func (s *Server) SessionManager() *session.Manager {
 	return s.sessionManager
-}
-
-// PopulateCapabilities implements discovery.CapabilityPopulator interface.
-// This allows the discovery middleware to trigger capability injection for subsequent requests.
-// Delegates to injector (single source of truth for capability injection logic).
-func (s *Server) PopulateCapabilities(sessionID string, caps *aggregator.AggregatedCapabilities) error {
-	return s.injector.PopulateCapabilities(sessionID, caps)
 }
 
 // Ready returns a channel that is closed when the server is ready to accept connections.
