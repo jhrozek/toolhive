@@ -15,7 +15,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/stacklok/toolhive/pkg/auth"
@@ -396,100 +395,6 @@ func (s *Server) Address() string {
 		return s.listener.Addr().String()
 	}
 	return fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
-}
-
-// registerTool registers a single tool with the MCP server.
-// The tool handler routes the request to the appropriate backend.
-//
-// NOTE: This function is currently unused due to lazy discovery implementation (issue #2501).
-// It will be used when we implement dynamic handler registration based on discovered capabilities.
-// Keeping it for now as it contains important handler logic.
-//
-//nolint:unparam,unused // Error return kept for future extensibility; unused until dynamic registration
-func (s *Server) registerTool(tool vmcp.Tool) error {
-	// Convert vmcp.Tool to mcp.Tool
-	// Note: tool.InputSchema is already a complete JSON Schema (map[string]any)
-	// containing type, properties, required, etc. We marshal it to JSON and
-	// use RawInputSchema to avoid double-nesting the schema structure.
-	schemaJSON, err := json.Marshal(tool.InputSchema)
-	if err != nil {
-		return fmt.Errorf("failed to marshal input schema for tool %s: %w", tool.Name, err)
-	}
-
-	mcpTool := mcp.Tool{
-		Name:           tool.Name,
-		Description:    tool.Description,
-		RawInputSchema: schemaJSON,
-	}
-
-	// Create handler that routes to backend
-	handler := s.handlerFactory.CreateToolHandler(tool.Name)
-
-	// Register with MCP server
-	s.mcpServer.AddTool(mcpTool, handler)
-
-	logger.Debugf("Registered tool: %s", tool.Name)
-	return nil
-}
-
-// registerResource registers a single resource with the MCP server.
-// The resource handler routes the request to the appropriate backend.
-//
-// NOTE: This function is currently unused due to lazy discovery implementation (issue #2501).
-// It will be used when we implement dynamic handler registration based on discovered capabilities.
-//
-//nolint:unparam,unused // Error return kept for future extensibility; unused until dynamic registration
-func (s *Server) registerResource(resource vmcp.Resource) error {
-	// Convert vmcp.Resource to mcp.Resource
-	mcpResource := mcp.Resource{
-		URI:         resource.URI,
-		Name:        resource.Name,
-		Description: resource.Description,
-		MIMEType:    resource.MimeType,
-	}
-
-	// Create handler that routes to backend
-	handler := s.handlerFactory.CreateResourceHandler(resource.URI)
-
-	// Register with MCP server
-	s.mcpServer.AddResource(mcpResource, handler)
-
-	logger.Debugf("Registered resource: %s (MIME: %s)", resource.URI, resource.MimeType)
-	return nil
-}
-
-// registerPrompt registers a single prompt with the MCP server.
-// The prompt handler routes the request to the appropriate backend.
-//
-// NOTE: This function is currently unused due to lazy discovery implementation (issue #2501).
-// It will be used when we implement dynamic handler registration based on discovered capabilities.
-//
-//nolint:unparam,unused // Error return kept for future extensibility; unused until dynamic registration
-func (s *Server) registerPrompt(prompt vmcp.Prompt) error {
-	// Convert vmcp.Prompt to mcp.Prompt
-	mcpArguments := make([]mcp.PromptArgument, len(prompt.Arguments))
-	for i, arg := range prompt.Arguments {
-		mcpArguments[i] = mcp.PromptArgument{
-			Name:        arg.Name,
-			Description: arg.Description,
-			Required:    arg.Required,
-		}
-	}
-
-	mcpPrompt := mcp.Prompt{
-		Name:        prompt.Name,
-		Description: prompt.Description,
-		Arguments:   mcpArguments,
-	}
-
-	// Create handler that routes to backend
-	handler := s.handlerFactory.CreatePromptHandler(prompt.Name)
-
-	// Register with MCP server
-	s.mcpServer.AddPrompt(mcpPrompt, handler)
-
-	logger.Debugf("Registered prompt: %s", prompt.Name)
-	return nil
 }
 
 // handleHealth handles /health and /ping HTTP requests.
