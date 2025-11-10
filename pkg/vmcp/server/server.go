@@ -22,8 +22,10 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
+	"github.com/stacklok/toolhive/pkg/vmcp/server/adapter"
 )
 
 const (
@@ -101,6 +103,9 @@ type Server struct {
 	// Backend client for making requests to backends
 	backendClient vmcp.BackendClient
 
+	// Handler factory for creating MCP request handlers
+	handlerFactory *adapter.DefaultHandlerFactory
+
 	// Discovery manager for lazy per-user capability discovery
 	discoveryMgr discovery.Manager
 
@@ -117,6 +122,9 @@ type Server struct {
 	// The SDK does NOT manage sessions itself - it only provides the interface.
 	sessionManager *session.Manager
 
+	// Injector for adding capabilities to SDK sessions
+	injector *SessionCapabilityInjector
+
 	// Ready channel signals when the server is ready to accept connections.
 	// Closed once the listener is created and serving.
 	ready     chan struct{}
@@ -124,6 +132,8 @@ type Server struct {
 }
 
 // New creates a new Virtual MCP Server instance.
+//
+//nolint:gocyclo // Complexity from hook logic is acceptable
 func New(
 	cfg *Config,
 	rt router.Router,
@@ -151,27 +161,75 @@ func New(
 		cfg.SessionTTL = defaultSessionTTL
 	}
 
+	// Create hooks for SDK integration
+	hooks := &server.Hooks{}
+
 	// Create mark3labs MCP server
 	mcpServer := server.NewMCPServer(
 		cfg.Name,
 		cfg.Version,
 		server.WithToolCapabilities(false), // We'll register tools dynamically
 		server.WithLogging(),
+		server.WithHooks(hooks),
 	)
 
 	// Create session manager for Streamable HTTP sessions
 	sessionManager := session.NewTypedManager(cfg.SessionTTL, session.SessionTypeStreamable)
 
-	return &Server{
+	// Create handler factory (used by adapter and for future dynamic registration)
+	handlerFactory := adapter.NewDefaultHandlerFactory(rt, backendClient)
+
+	// Create Server instance
+	srv := &Server{
 		config:         cfg,
 		mcpServer:      mcpServer,
 		router:         rt,
 		backendClient:  backendClient,
+		handlerFactory: handlerFactory,
 		discoveryMgr:   discoveryMgr,
 		backends:       backends,
 		sessionManager: sessionManager,
 		ready:          make(chan struct{}),
 	}
+
+	// Create adapter (single source of truth for capability injection)
+	capabilityAdapter := adapter.NewCapabilityAdapter(handlerFactory)
+	injector := NewSessionCapabilityInjector(mcpServer, capabilityAdapter)
+	srv.injector = injector
+
+	// Register post-initialize handler to populate capabilities after SDK creates session
+	hooks.AddAfterInitialize(func(ctx context.Context, _ any, _ *mcp.InitializeRequest, _ *mcp.InitializeResult) {
+		// Get session from context (already initialized by SDK)
+		clientSession := server.ClientSessionFromContext(ctx)
+		if clientSession == nil {
+			logger.Warnw("no session in context for initialize hook")
+			return
+		}
+
+		sessionID := clientSession.SessionID()
+		logger.Debugw("post-initialize hook called", "session_id", sessionID)
+
+		// Get capabilities from context (discovered by middleware)
+		caps, ok := discovery.DiscoveredCapabilitiesFromContext(ctx)
+		if !ok || caps == nil {
+			logger.Warnw("no discovered capabilities in context for initialize hook",
+				"session_id", sessionID)
+			return
+		}
+
+		// Delegate to injector (single source of truth)
+		if err := injector.PopulateCapabilities(sessionID, caps); err != nil {
+			logger.Errorw("failed to inject session capabilities",
+				"error", err,
+				"session_id", sessionID)
+			return
+		}
+
+		logger.Infow("session capabilities injected via injector",
+			"session_id", sessionID)
+	})
+
+	return srv
 }
 
 // Start starts the Virtual MCP Server and begins serving requests.
@@ -207,7 +265,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Apply discovery middleware (runs after auth middleware)
 	// Discovery middleware performs per-request capability aggregation with user context
-	mcpHandler = discovery.Middleware(s.discoveryMgr, s.backends)(mcpHandler)
+	mcpHandler = discovery.Middleware(s.discoveryMgr, s.backends, s)(mcpHandler)
 	logger.Info("Discovery middleware enabled for lazy per-user capability discovery")
 
 	// Apply authentication middleware if configured (runs first in chain)
@@ -342,7 +400,7 @@ func (s *Server) registerTool(tool vmcp.Tool) error {
 	}
 
 	// Create handler that routes to backend
-	handler := s.createToolHandler(tool.Name)
+	handler := s.handlerFactory.CreateToolHandler(tool.Name)
 
 	// Register with MCP server
 	s.mcpServer.AddTool(mcpTool, handler)
@@ -368,7 +426,7 @@ func (s *Server) registerResource(resource vmcp.Resource) error {
 	}
 
 	// Create handler that routes to backend
-	handler := s.createResourceHandler(resource.URI)
+	handler := s.handlerFactory.CreateResourceHandler(resource.URI)
 
 	// Register with MCP server
 	s.mcpServer.AddResource(mcpResource, handler)
@@ -402,204 +460,13 @@ func (s *Server) registerPrompt(prompt vmcp.Prompt) error {
 	}
 
 	// Create handler that routes to backend
-	handler := s.createPromptHandler(prompt.Name)
+	handler := s.handlerFactory.CreatePromptHandler(prompt.Name)
 
 	// Register with MCP server
 	s.mcpServer.AddPrompt(mcpPrompt, handler)
 
 	logger.Debugf("Registered prompt: %s", prompt.Name)
 	return nil
-}
-
-// createToolHandler creates a tool handler that routes to the appropriate backend.
-//
-// NOTE: This function is currently unused due to lazy discovery implementation (issue #2501).
-//
-//nolint:unused // Unused until dynamic handler registration
-func (s *Server) createToolHandler(toolName string) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		logger.Debugf("Handling tool call: %s", toolName)
-
-		// Route to backend
-		target, err := s.router.RouteTool(ctx, toolName)
-		if err != nil {
-			// Wrap routing errors with domain error
-			if errors.Is(err, router.ErrToolNotFound) {
-				wrappedErr := fmt.Errorf("%w: tool %s", vmcp.ErrNotFound, toolName)
-				logger.Warnf("Routing failed: %v", wrappedErr)
-				return mcp.NewToolResultError(wrappedErr.Error()), nil
-			}
-			logger.Warnf("Failed to route tool %s: %v", toolName, err)
-			return mcp.NewToolResultError(fmt.Sprintf("Routing error: %v", err)), nil
-		}
-
-		// Convert arguments to map[string]any
-		args, ok := request.Params.Arguments.(map[string]any)
-		if !ok {
-			wrappedErr := fmt.Errorf("%w: arguments must be object, got %T", vmcp.ErrInvalidInput, request.Params.Arguments)
-			logger.Warnf("Invalid arguments for tool %s: %v", toolName, wrappedErr)
-			return mcp.NewToolResultError(wrappedErr.Error()), nil
-		}
-
-		// Get the name to use when calling the backend (handles conflict resolution renaming)
-		backendToolName := target.GetBackendCapabilityName(toolName)
-		if backendToolName != toolName {
-			logger.Debugf("Translating tool name %s -> %s for backend %s",
-				toolName, backendToolName, target.WorkloadID)
-		}
-
-		// Forward request to backend
-		result, err := s.backendClient.CallTool(ctx, target, backendToolName, args)
-		if err != nil {
-			// Distinguish between domain errors (tool execution failed) and operational errors (backend unavailable)
-			if errors.Is(err, vmcp.ErrToolExecutionFailed) {
-				// Tool ran but returned error - forward transparently to client
-				logger.Debugf("Tool execution failed for %s: %v", toolName, err)
-				return mcp.NewToolResultError(err.Error()), nil
-			}
-			if errors.Is(err, vmcp.ErrBackendUnavailable) {
-				// Operational error - backend unreachable
-				logger.Warnf("Backend unavailable for tool %s: %v", toolName, err)
-				return mcp.NewToolResultError(fmt.Sprintf("Backend unavailable: %v", err)), nil
-			}
-			// Unknown error type
-			logger.Warnf("Backend tool call failed for %s: %v", toolName, err)
-			return mcp.NewToolResultError(fmt.Sprintf("Tool call failed: %v", err)), nil
-		}
-
-		// Convert result to MCP format
-		return mcp.NewToolResultStructuredOnly(result), nil
-	}
-}
-
-// createResourceHandler creates a resource handler that routes to the appropriate backend.
-//
-// NOTE: This function is currently unused due to lazy discovery implementation (issue #2501).
-//
-//nolint:unused // Unused until dynamic handler registration
-func (s *Server) createResourceHandler(uri string) func(
-	context.Context, mcp.ReadResourceRequest,
-) ([]mcp.ResourceContents, error) {
-	return func(ctx context.Context, _ mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-		logger.Debugf("Handling resource read: %s", uri)
-
-		// Get discovered capabilities from context
-		caps, ok := discovery.DiscoveredCapabilitiesFromContext(ctx)
-		if !ok {
-			logger.Warn("Capabilities not discovered in context")
-			return nil, fmt.Errorf("capabilities not discovered")
-		}
-
-		// Route to backend
-		target, err := s.router.RouteResource(ctx, uri)
-		if err != nil {
-			// Wrap routing errors with domain error
-			if errors.Is(err, router.ErrResourceNotFound) {
-				wrappedErr := fmt.Errorf("%w: resource %s", vmcp.ErrNotFound, uri)
-				logger.Warnf("Routing failed: %v", wrappedErr)
-				return nil, wrappedErr
-			}
-			logger.Warnf("Failed to route resource %s: %v", uri, err)
-			return nil, fmt.Errorf("routing error: %w", err)
-		}
-
-		// Get the URI to use when calling the backend (handles conflict resolution renaming)
-		backendURI := target.GetBackendCapabilityName(uri)
-
-		// Forward request to backend
-		data, err := s.backendClient.ReadResource(ctx, target, backendURI)
-		if err != nil {
-			// Check if backend is unavailable (operational error)
-			if errors.Is(err, vmcp.ErrBackendUnavailable) {
-				logger.Warnf("Backend unavailable for resource %s: %v", uri, err)
-				return nil, fmt.Errorf("backend unavailable: %w", err)
-			}
-			// Other errors
-			logger.Warnf("Backend resource read failed for %s: %v", uri, err)
-			return nil, fmt.Errorf("resource read failed: %w", err)
-		}
-
-		// Get resource MIME type from discovered capabilities
-		mimeType := "application/octet-stream" // Default for unknown resources
-		for _, res := range caps.Resources {
-			if res.URI == uri && res.MimeType != "" {
-				mimeType = res.MimeType
-				break
-			}
-		}
-
-		// Convert to MCP ResourceContents
-		contents := []mcp.ResourceContents{
-			mcp.TextResourceContents{
-				URI:      uri,
-				MIMEType: mimeType,
-				Text:     string(data),
-			},
-		}
-
-		return contents, nil
-	}
-}
-
-// createPromptHandler creates a prompt handler that routes to the appropriate backend.
-//
-// NOTE: This function is currently unused due to lazy discovery implementation (issue #2501).
-//
-//nolint:unused // Unused until dynamic handler registration
-func (s *Server) createPromptHandler(promptName string) func(
-	context.Context, mcp.GetPromptRequest,
-) (*mcp.GetPromptResult, error) {
-	return func(ctx context.Context, request mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
-		logger.Debugf("Handling prompt request: %s", promptName)
-
-		// Route to backend
-		target, err := s.router.RoutePrompt(ctx, promptName)
-		if err != nil {
-			// Wrap routing errors with domain error
-			if errors.Is(err, router.ErrPromptNotFound) {
-				wrappedErr := fmt.Errorf("%w: prompt %s", vmcp.ErrNotFound, promptName)
-				logger.Warnf("Routing failed: %v", wrappedErr)
-				return nil, wrappedErr
-			}
-			logger.Warnf("Failed to route prompt %s: %v", promptName, err)
-			return nil, fmt.Errorf("routing error: %w", err)
-		}
-
-		// Convert arguments to map[string]any
-		args := make(map[string]any)
-		for k, v := range request.Params.Arguments {
-			args[k] = v
-		}
-
-		// Get the name to use when calling the backend (handles conflict resolution renaming)
-		backendPromptName := target.GetBackendCapabilityName(promptName)
-
-		// Forward request to backend
-		promptText, err := s.backendClient.GetPrompt(ctx, target, backendPromptName, args)
-		if err != nil {
-			// Check if backend is unavailable (operational error)
-			if errors.Is(err, vmcp.ErrBackendUnavailable) {
-				logger.Warnf("Backend unavailable for prompt %s: %v", promptName, err)
-				return nil, fmt.Errorf("backend unavailable: %w", err)
-			}
-			// Other errors
-			logger.Warnf("Backend prompt request failed for %s: %v", promptName, err)
-			return nil, fmt.Errorf("prompt request failed: %w", err)
-		}
-
-		// Convert to MCP GetPromptResult
-		result := &mcp.GetPromptResult{
-			Description: fmt.Sprintf("Prompt: %s", promptName),
-			Messages: []mcp.PromptMessage{
-				{
-					Role:    "assistant",
-					Content: mcp.NewTextContent(promptText),
-				},
-			},
-		}
-
-		return result, nil
-	}
 }
 
 // handleHealth handles /health and /ping HTTP requests.
@@ -632,6 +499,13 @@ func (*Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 // This is useful for testing and monitoring.
 func (s *Server) SessionManager() *session.Manager {
 	return s.sessionManager
+}
+
+// PopulateCapabilities implements discovery.CapabilityPopulator interface.
+// This allows the discovery middleware to trigger capability injection for subsequent requests.
+// Delegates to injector (single source of truth for capability injection logic).
+func (s *Server) PopulateCapabilities(sessionID string, caps *aggregator.AggregatedCapabilities) error {
+	return s.injector.PopulateCapabilities(sessionID, caps)
 }
 
 // Ready returns a channel that is closed when the server is ready to accept connections.

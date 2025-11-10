@@ -18,6 +18,13 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery/mocks"
 )
 
+// mockPopulator is a simple test implementation of CapabilityPopulator
+type mockPopulator struct{}
+
+func (*mockPopulator) PopulateCapabilities(_ string, _ *aggregator.AggregatedCapabilities) error {
+	return nil
+}
+
 func TestMiddleware_Success(t *testing.T) {
 	t.Parallel()
 
@@ -75,7 +82,7 @@ func TestMiddleware_Success(t *testing.T) {
 	})
 
 	// Wrap handler with middleware
-	middleware := Middleware(mockMgr, backends)
+	middleware := Middleware(mockMgr, backends, &mockPopulator{})
 	wrappedHandler := middleware(testHandler)
 
 	// Create test request
@@ -114,7 +121,7 @@ func TestMiddleware_DiscoveryTimeout(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := Middleware(mockMgr, backends)
+	middleware := Middleware(mockMgr, backends, &mockPopulator{})
 	wrappedHandler := middleware(testHandler)
 
 	req := httptest.NewRequest(http.MethodPost, "/mcp/v1/tools/list", nil)
@@ -153,7 +160,7 @@ func TestMiddleware_DiscoveryFailure(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := Middleware(mockMgr, backends)
+	middleware := Middleware(mockMgr, backends, &mockPopulator{})
 	wrappedHandler := middleware(testHandler)
 
 	req := httptest.NewRequest(http.MethodPost, "/mcp/v1/tools/list", nil)
@@ -252,7 +259,7 @@ func TestMiddleware_CapabilitiesInContext(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := Middleware(mockMgr, backends)
+	middleware := Middleware(mockMgr, backends, &mockPopulator{})
 	wrappedHandler := middleware(testHandler)
 
 	req := httptest.NewRequest(http.MethodPost, "/mcp/v1/tools/list", nil)
@@ -315,7 +322,7 @@ func TestMiddleware_PreservesUserContext(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := Middleware(mockMgr, backends)
+	middleware := Middleware(mockMgr, backends, &mockPopulator{})
 	wrappedHandler := middleware(testHandler)
 
 	// Create request with user context (as auth middleware would)
@@ -367,7 +374,7 @@ func TestMiddleware_ContextTimeoutHandling(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := Middleware(mockMgr, backends)
+	middleware := Middleware(mockMgr, backends, &mockPopulator{})
 	wrappedHandler := middleware(testHandler)
 
 	req := httptest.NewRequest(http.MethodPost, "/mcp/v1/tools/list", nil)
