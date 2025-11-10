@@ -198,40 +198,27 @@ func New(
 	injector := NewSessionCapabilityInjector(mcpServer, capabilityAdapter)
 	srv.injector = injector
 
-	// Register post-initialize handler to populate capabilities after SDK creates session
-	hooks.AddAfterInitialize(func(ctx context.Context, _ any, _ *mcp.InitializeRequest, _ *mcp.InitializeResult) {
-		// Get session from context (already initialized by SDK)
-		clientSession := server.ClientSessionFromContext(ctx)
-		if clientSession == nil {
-			logger.Warnw("no session in context for initialize hook")
-			return
-		}
-
-		sessionID := clientSession.SessionID()
-		logger.Debugw("post-initialize hook called", "session_id", sessionID)
+	// Register OnRegisterSession hook to inject capabilities after SDK registers session.
+	// This hook fires AFTER the session is registered in the SDK (unlike AfterInitialize which
+	// fires BEFORE session registration), allowing us to safely call AddSessionTools/AddSessionResources.
+	//
+	// The discovery middleware populates capabilities in the context, which is available here.
+	// We inject them into the SDK session and store the routing table for subsequent requests.
+	hooks.AddOnRegisterSession(func(ctx context.Context, session server.ClientSession) {
+		sessionID := session.SessionID()
+		logger.Debugw("OnRegisterSession hook called", "session_id", sessionID)
 
 		// Get capabilities from context (discovered by middleware)
 		caps, ok := discovery.DiscoveredCapabilitiesFromContext(ctx)
 		if !ok || caps == nil {
-			logger.Warnw("no discovered capabilities in context for initialize hook",
+			logger.Warnw("no discovered capabilities in context for OnRegisterSession hook",
 				"session_id", sessionID)
 			return
 		}
-
-		// Delegate to injector (single source of truth)
-		if err := injector.InjectCapabilities(sessionID, caps); err != nil {
-			logger.Errorw("failed to inject session capabilities",
-				"error", err,
-				"session_id", sessionID)
-			return
-		}
-
-		logger.Infow("session capabilities injected via injector",
-			"session_id", sessionID)
 
 		// Store routing table in VMCPSession for subsequent requests
 		// This enables the middleware to reconstruct capabilities from session
-		// without re-running discovery for every request.
+		// without re-running discovery for every request
 		if sess, ok := sessionManager.Get(sessionID); ok {
 			if vmcpSess, ok := sess.(*vmcpsession.VMCPSession); ok {
 				vmcpSess.SetRoutingTable(caps.RoutingTable)
@@ -249,6 +236,19 @@ func New(
 			logger.Warnw("session not found when storing routing table",
 				"session_id", sessionID)
 		}
+
+		// Inject capabilities via injector (single source of truth for SDK capability registration)
+		if err := injector.InjectCapabilities(sessionID, caps); err != nil {
+			logger.Errorw("failed to inject session capabilities",
+				"error", err,
+				"session_id", sessionID)
+			return
+		}
+
+		logger.Infow("session capabilities injected",
+			"session_id", sessionID,
+			"tool_count", len(caps.Tools),
+			"resource_count", len(caps.Resources))
 	})
 
 	return srv
