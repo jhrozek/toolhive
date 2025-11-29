@@ -11,6 +11,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/groups/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	discoverermocks "github.com/stacklok/toolhive/pkg/vmcp/workloads/mocks"
 )
@@ -292,7 +293,7 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 		}
 
 		authConfig := &config.OutgoingAuthConfig{
-			Backends: map[string]*config.BackendAuthStrategy{
+			Backends: map[string]*authtypes.BackendAuthStrategy{
 				"workload1": {
 					Type: "bearer",
 					Metadata: map[string]any{
@@ -422,7 +423,7 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 
 		authConfig := &config.OutgoingAuthConfig{
 			Source: "discovered",
-			Backends: map[string]*config.BackendAuthStrategy{
+			Backends: map[string]*authtypes.BackendAuthStrategy{
 				"backend1": {
 					Type: "bearer",
 					Metadata: map[string]any{
@@ -464,7 +465,7 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 
 		authConfig := &config.OutgoingAuthConfig{
 			Source: "discovered",
-			Backends: map[string]*config.BackendAuthStrategy{
+			Backends: map[string]*authtypes.BackendAuthStrategy{
 				"backend1": {
 					Type: "bearer",
 					Metadata: map[string]any{
@@ -503,7 +504,7 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 
 		authConfig := &config.OutgoingAuthConfig{
 			Source: "mixed",
-			Backends: map[string]*config.BackendAuthStrategy{
+			Backends: map[string]*authtypes.BackendAuthStrategy{
 				"backend1": {
 					Type: "bearer",
 					Metadata: map[string]any{
@@ -545,7 +546,7 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 
 		authConfig := &config.OutgoingAuthConfig{
 			Source: "mixed",
-			Backends: map[string]*config.BackendAuthStrategy{
+			Backends: map[string]*authtypes.BackendAuthStrategy{
 				"other-backend": {
 					Type: "bearer",
 					Metadata: map[string]any{
@@ -587,7 +588,7 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 
 		authConfig := &config.OutgoingAuthConfig{
 			Source: "inline",
-			Backends: map[string]*config.BackendAuthStrategy{
+			Backends: map[string]*authtypes.BackendAuthStrategy{
 				"backend1": {
 					Type: "bearer",
 					Metadata: map[string]any{
@@ -629,7 +630,7 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 
 		authConfig := &config.OutgoingAuthConfig{
 			Source: "", // Empty source
-			Backends: map[string]*config.BackendAuthStrategy{
+			Backends: map[string]*authtypes.BackendAuthStrategy{
 				"backend1": {
 					Type: "bearer",
 					Metadata: map[string]any{
@@ -671,7 +672,7 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 
 		authConfig := &config.OutgoingAuthConfig{
 			Source: "unknown-mode",
-			Backends: map[string]*config.BackendAuthStrategy{
+			Backends: map[string]*authtypes.BackendAuthStrategy{
 				"backend1": {
 					Type: "bearer",
 					Metadata: map[string]any{
@@ -743,7 +744,7 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 
 		authConfig := &config.OutgoingAuthConfig{
 			Source: "inline",
-			Backends: map[string]*config.BackendAuthStrategy{
+			Backends: map[string]*authtypes.BackendAuthStrategy{
 				"other-backend": {
 					Type: "bearer",
 					Metadata: map[string]any{
@@ -786,7 +787,7 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 
 		authConfig := &config.OutgoingAuthConfig{
 			Source:   "discovered",
-			Backends: map[string]*config.BackendAuthStrategy{},
+			Backends: map[string]*authtypes.BackendAuthStrategy{},
 		}
 
 		discoverer := &backendDiscoverer{
@@ -823,7 +824,7 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 
 		authConfig := &config.OutgoingAuthConfig{
 			Source: "mixed",
-			Backends: map[string]*config.BackendAuthStrategy{
+			Backends: map[string]*authtypes.BackendAuthStrategy{
 				"other-backend": {
 					Type: "bearer",
 					Metadata: map[string]any{
@@ -831,7 +832,7 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 					},
 				},
 			},
-			Default: &config.BackendAuthStrategy{
+			Default: &authtypes.BackendAuthStrategy{
 				Type: "bearer",
 				Metadata: map[string]any{
 					"token": "default-token",
@@ -869,7 +870,7 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 
 		authConfig := &config.OutgoingAuthConfig{
 			Source: "discovered",
-			Default: &config.BackendAuthStrategy{
+			Default: &authtypes.BackendAuthStrategy{
 				Type: "bearer",
 				Metadata: map[string]any{
 					"token": "default-fallback-token",
