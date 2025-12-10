@@ -60,6 +60,24 @@ func newMockRequester(id string, client fosite.Client) *mockRequester {
 	}
 }
 
+// newMockRequesterWithExpiration creates a mock requester with specific expiration times.
+func newMockRequesterWithExpiration(id string, client fosite.Client, tokenType fosite.TokenType, expiresAt time.Time) *mockRequester {
+	session := NewSession("test-subject", "test-idp-session")
+	session.SetExpiresAt(tokenType, expiresAt)
+
+	return &mockRequester{
+		id:                id,
+		requestedAt:       time.Now(),
+		client:            client,
+		requestedScopes:   fosite.Arguments{"openid", "profile"},
+		requestedAudience: fosite.Arguments{},
+		grantedScopes:     fosite.Arguments{"openid"},
+		grantedAudience:   fosite.Arguments{},
+		form:              make(url.Values),
+		session:           session,
+	}
+}
+
 func (r *mockRequester) SetID(id string)                           { r.id = id }
 func (r *mockRequester) GetID() string                             { return r.id }
 func (r *mockRequester) GetRequestedAt() time.Time                 { return r.requestedAt }
@@ -85,6 +103,8 @@ func TestNewMemoryStorage(t *testing.T) {
 	t.Parallel()
 
 	storage := NewMemoryStorage()
+	defer storage.Close()
+
 	require.NotNil(t, storage)
 	assert.NotNil(t, storage.clients)
 	assert.NotNil(t, storage.authCodes)
@@ -94,12 +114,25 @@ func TestNewMemoryStorage(t *testing.T) {
 	assert.NotNil(t, storage.idpTokens)
 	assert.NotNil(t, storage.invalidatedCodes)
 	assert.NotNil(t, storage.clientAssertionJWTs)
+	assert.Equal(t, DefaultCleanupInterval, storage.cleanupInterval)
+}
+
+func TestNewMemoryStorage_WithCleanupInterval(t *testing.T) {
+	t.Parallel()
+
+	customInterval := 1 * time.Minute
+	storage := NewMemoryStorage(WithCleanupInterval(customInterval))
+	defer storage.Close()
+
+	assert.Equal(t, customInterval, storage.cleanupInterval)
 }
 
 func TestMemoryStorage_RegisterClient(t *testing.T) {
 	t.Parallel()
 
 	storage := NewMemoryStorage()
+	defer storage.Close()
+
 	client := &mockClient{id: "test-client"}
 
 	storage.RegisterClient(client)
@@ -141,6 +174,8 @@ func TestMemoryStorage_GetClient(t *testing.T) {
 			t.Parallel()
 
 			storage := NewMemoryStorage()
+			defer storage.Close()
+
 			tt.setup(storage)
 
 			client, err := storage.GetClient(context.Background(), tt.clientID)
@@ -165,6 +200,7 @@ func TestMemoryStorage_ClientAssertionJWT(t *testing.T) {
 
 		ctx := context.Background()
 		storage := NewMemoryStorage()
+		defer storage.Close()
 
 		err := storage.ClientAssertionJWTValid(ctx, "unknown-jti")
 		require.NoError(t, err)
@@ -175,6 +211,7 @@ func TestMemoryStorage_ClientAssertionJWT(t *testing.T) {
 
 		ctx := context.Background()
 		storage := NewMemoryStorage()
+		defer storage.Close()
 
 		jti := "test-jti"
 		exp := time.Now().Add(time.Hour)
@@ -191,6 +228,7 @@ func TestMemoryStorage_ClientAssertionJWT(t *testing.T) {
 
 		ctx := context.Background()
 		storage := NewMemoryStorage()
+		defer storage.Close()
 
 		jti := "expired-jti"
 		exp := time.Now().Add(-time.Hour) // Already expired
@@ -206,6 +244,7 @@ func TestMemoryStorage_ClientAssertionJWT(t *testing.T) {
 
 		ctx := context.Background()
 		storage := NewMemoryStorage()
+		defer storage.Close()
 
 		// Add an expired JTI
 		storage.mu.Lock()
@@ -233,6 +272,8 @@ func TestMemoryStorage_AuthorizeCodeSession(t *testing.T) {
 
 		ctx := context.Background()
 		storage := NewMemoryStorage()
+		defer storage.Close()
+
 		client := &mockClient{id: "test-client"}
 		request := newMockRequester("req-1", client)
 
@@ -250,6 +291,7 @@ func TestMemoryStorage_AuthorizeCodeSession(t *testing.T) {
 
 		ctx := context.Background()
 		storage := NewMemoryStorage()
+		defer storage.Close()
 
 		_, err := storage.GetAuthorizeCodeSession(ctx, "non-existent", nil)
 		require.Error(t, err)
@@ -261,6 +303,8 @@ func TestMemoryStorage_AuthorizeCodeSession(t *testing.T) {
 
 		ctx := context.Background()
 		storage := NewMemoryStorage()
+		defer storage.Close()
+
 		client := &mockClient{id: "test-client"}
 		request := newMockRequester("req-1", client)
 
@@ -283,6 +327,7 @@ func TestMemoryStorage_AuthorizeCodeSession(t *testing.T) {
 
 		ctx := context.Background()
 		storage := NewMemoryStorage()
+		defer storage.Close()
 
 		err := storage.InvalidateAuthorizeCodeSession(ctx, "non-existent-code")
 		require.Error(t, err)
@@ -300,6 +345,8 @@ func TestMemoryStorage_AccessTokenSession(t *testing.T) {
 
 		ctx := context.Background()
 		storage := NewMemoryStorage()
+		defer storage.Close()
+
 		client := &mockClient{id: "test-client"}
 		request := newMockRequester("req-1", client)
 
@@ -317,6 +364,7 @@ func TestMemoryStorage_AccessTokenSession(t *testing.T) {
 
 		ctx := context.Background()
 		storage := NewMemoryStorage()
+		defer storage.Close()
 
 		_, err := storage.GetAccessTokenSession(ctx, "non-existent", nil)
 		require.Error(t, err)
@@ -328,6 +376,8 @@ func TestMemoryStorage_AccessTokenSession(t *testing.T) {
 
 		ctx := context.Background()
 		storage := NewMemoryStorage()
+		defer storage.Close()
+
 		client := &mockClient{id: "test-client"}
 		request := newMockRequester("req-1", client)
 
@@ -343,15 +393,17 @@ func TestMemoryStorage_AccessTokenSession(t *testing.T) {
 		assert.ErrorIs(t, err, fosite.ErrNotFound)
 	})
 
-	t.Run("delete non-existent token (no error)", func(t *testing.T) {
+	t.Run("delete non-existent token returns error", func(t *testing.T) {
 		t.Parallel()
 
 		ctx := context.Background()
 		storage := NewMemoryStorage()
+		defer storage.Close()
 
-		// Delete should not return error for non-existent tokens
+		// Delete should return error for non-existent tokens
 		err := storage.DeleteAccessTokenSession(ctx, "non-existent-token")
-		require.NoError(t, err)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, fosite.ErrNotFound)
 	})
 }
 
@@ -365,6 +417,8 @@ func TestMemoryStorage_RefreshTokenSession(t *testing.T) {
 
 		ctx := context.Background()
 		storage := NewMemoryStorage()
+		defer storage.Close()
+
 		client := &mockClient{id: "test-client"}
 		request := newMockRequester("req-1", client)
 
@@ -382,6 +436,7 @@ func TestMemoryStorage_RefreshTokenSession(t *testing.T) {
 
 		ctx := context.Background()
 		storage := NewMemoryStorage()
+		defer storage.Close()
 
 		_, err := storage.GetRefreshTokenSession(ctx, "non-existent", nil)
 		require.Error(t, err)
@@ -393,6 +448,8 @@ func TestMemoryStorage_RefreshTokenSession(t *testing.T) {
 
 		ctx := context.Background()
 		storage := NewMemoryStorage()
+		defer storage.Close()
+
 		client := &mockClient{id: "test-client"}
 		request := newMockRequester("req-1", client)
 
@@ -417,6 +474,8 @@ func TestMemoryStorage_RotateRefreshToken(t *testing.T) {
 
 		ctx := context.Background()
 		storage := NewMemoryStorage()
+		defer storage.Close()
+
 		client := &mockClient{id: "test-client"}
 
 		requestID := "request-123"
@@ -448,6 +507,7 @@ func TestMemoryStorage_RotateRefreshToken(t *testing.T) {
 
 		ctx := context.Background()
 		storage := NewMemoryStorage()
+		defer storage.Close()
 
 		err := storage.RotateRefreshToken(ctx, "non-existent-request", "non-existent-sig")
 		require.NoError(t, err)
@@ -464,6 +524,8 @@ func TestMemoryStorage_PKCERequestSession(t *testing.T) {
 
 		ctx := context.Background()
 		storage := NewMemoryStorage()
+		defer storage.Close()
+
 		client := &mockClient{id: "test-client"}
 		request := newMockRequester("req-1", client)
 
@@ -481,6 +543,7 @@ func TestMemoryStorage_PKCERequestSession(t *testing.T) {
 
 		ctx := context.Background()
 		storage := NewMemoryStorage()
+		defer storage.Close()
 
 		_, err := storage.GetPKCERequestSession(ctx, "non-existent", nil)
 		require.Error(t, err)
@@ -492,6 +555,8 @@ func TestMemoryStorage_PKCERequestSession(t *testing.T) {
 
 		ctx := context.Background()
 		storage := NewMemoryStorage()
+		defer storage.Close()
+
 		client := &mockClient{id: "test-client"}
 		request := newMockRequester("req-1", client)
 
@@ -518,6 +583,7 @@ func TestMemoryStorage_IDPTokens(t *testing.T) {
 
 		ctx := context.Background()
 		storage := NewMemoryStorage()
+		defer storage.Close()
 
 		sessionID := "session-123"
 		tokens := &IDPTokens{
@@ -542,6 +608,7 @@ func TestMemoryStorage_IDPTokens(t *testing.T) {
 
 		ctx := context.Background()
 		storage := NewMemoryStorage()
+		defer storage.Close()
 
 		_, err := storage.GetIDPTokens(ctx, "non-existent")
 		require.Error(t, err)
@@ -553,6 +620,7 @@ func TestMemoryStorage_IDPTokens(t *testing.T) {
 
 		ctx := context.Background()
 		storage := NewMemoryStorage()
+		defer storage.Close()
 
 		sessionID := "session-to-delete"
 		tokens := &IDPTokens{AccessToken: "test"}
@@ -572,6 +640,7 @@ func TestMemoryStorage_IDPTokens(t *testing.T) {
 
 		ctx := context.Background()
 		storage := NewMemoryStorage()
+		defer storage.Close()
 
 		sessionID := "session-overwrite"
 		tokens1 := &IDPTokens{AccessToken: "token-1"}
@@ -589,6 +658,393 @@ func TestMemoryStorage_IDPTokens(t *testing.T) {
 	})
 }
 
+// --- TTL and Cleanup Tests ---
+
+func TestMemoryStorage_CleanupExpired(t *testing.T) {
+	t.Parallel()
+
+	t.Run("cleanup expired auth codes", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := context.Background()
+		storage := NewMemoryStorage()
+		defer storage.Close()
+
+		client := &mockClient{id: "test-client"}
+
+		// Create an auth code with expired session
+		expiredRequest := newMockRequesterWithExpiration("req-expired", client, fosite.AuthorizeCode, time.Now().Add(-time.Hour))
+		err := storage.CreateAuthorizeCodeSession(ctx, "expired-code", expiredRequest)
+		require.NoError(t, err)
+
+		// Create an auth code with valid session
+		validRequest := newMockRequesterWithExpiration("req-valid", client, fosite.AuthorizeCode, time.Now().Add(time.Hour))
+		err = storage.CreateAuthorizeCodeSession(ctx, "valid-code", validRequest)
+		require.NoError(t, err)
+
+		// Verify both exist
+		stats := storage.Stats()
+		assert.Equal(t, 2, stats.AuthCodes)
+
+		// Run cleanup
+		storage.cleanupExpired()
+
+		// Verify only valid one remains
+		stats = storage.Stats()
+		assert.Equal(t, 1, stats.AuthCodes)
+
+		_, err = storage.GetAuthorizeCodeSession(ctx, "expired-code", nil)
+		assert.ErrorIs(t, err, fosite.ErrNotFound)
+
+		_, err = storage.GetAuthorizeCodeSession(ctx, "valid-code", nil)
+		assert.NoError(t, err)
+	})
+
+	t.Run("cleanup expired access tokens", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := context.Background()
+		storage := NewMemoryStorage()
+		defer storage.Close()
+
+		client := &mockClient{id: "test-client"}
+
+		// Create an expired access token
+		expiredRequest := newMockRequesterWithExpiration("req-expired", client, fosite.AccessToken, time.Now().Add(-time.Hour))
+		err := storage.CreateAccessTokenSession(ctx, "expired-token", expiredRequest)
+		require.NoError(t, err)
+
+		// Create a valid access token
+		validRequest := newMockRequesterWithExpiration("req-valid", client, fosite.AccessToken, time.Now().Add(time.Hour))
+		err = storage.CreateAccessTokenSession(ctx, "valid-token", validRequest)
+		require.NoError(t, err)
+
+		// Verify both exist
+		stats := storage.Stats()
+		assert.Equal(t, 2, stats.AccessTokens)
+
+		// Run cleanup
+		storage.cleanupExpired()
+
+		// Verify only valid one remains
+		stats = storage.Stats()
+		assert.Equal(t, 1, stats.AccessTokens)
+
+		_, err = storage.GetAccessTokenSession(ctx, "expired-token", nil)
+		assert.ErrorIs(t, err, fosite.ErrNotFound)
+
+		_, err = storage.GetAccessTokenSession(ctx, "valid-token", nil)
+		assert.NoError(t, err)
+	})
+
+	t.Run("cleanup expired refresh tokens", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := context.Background()
+		storage := NewMemoryStorage()
+		defer storage.Close()
+
+		client := &mockClient{id: "test-client"}
+
+		// Create an expired refresh token
+		expiredRequest := newMockRequesterWithExpiration("req-expired", client, fosite.RefreshToken, time.Now().Add(-time.Hour))
+		err := storage.CreateRefreshTokenSession(ctx, "expired-token", "access-sig", expiredRequest)
+		require.NoError(t, err)
+
+		// Create a valid refresh token
+		validRequest := newMockRequesterWithExpiration("req-valid", client, fosite.RefreshToken, time.Now().Add(time.Hour))
+		err = storage.CreateRefreshTokenSession(ctx, "valid-token", "access-sig", validRequest)
+		require.NoError(t, err)
+
+		// Run cleanup
+		storage.cleanupExpired()
+
+		// Verify only valid one remains
+		stats := storage.Stats()
+		assert.Equal(t, 1, stats.RefreshTokens)
+	})
+
+	t.Run("cleanup expired PKCE requests", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := context.Background()
+		storage := NewMemoryStorage()
+		defer storage.Close()
+
+		client := &mockClient{id: "test-client"}
+
+		// Create an expired PKCE request
+		expiredRequest := newMockRequesterWithExpiration("req-expired", client, fosite.AuthorizeCode, time.Now().Add(-time.Hour))
+		err := storage.CreatePKCERequestSession(ctx, "expired-pkce", expiredRequest)
+		require.NoError(t, err)
+
+		// Create a valid PKCE request
+		validRequest := newMockRequesterWithExpiration("req-valid", client, fosite.AuthorizeCode, time.Now().Add(time.Hour))
+		err = storage.CreatePKCERequestSession(ctx, "valid-pkce", validRequest)
+		require.NoError(t, err)
+
+		// Run cleanup
+		storage.cleanupExpired()
+
+		// Verify only valid one remains
+		stats := storage.Stats()
+		assert.Equal(t, 1, stats.PKCERequests)
+	})
+
+	t.Run("cleanup expired IDP tokens", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := context.Background()
+		storage := NewMemoryStorage()
+		defer storage.Close()
+
+		// Create expired IDP tokens
+		expiredTokens := &IDPTokens{
+			AccessToken: "expired",
+			ExpiresAt:   time.Now().Add(-time.Hour),
+		}
+		err := storage.StoreIDPTokens(ctx, "expired-session", expiredTokens)
+		require.NoError(t, err)
+
+		// Create valid IDP tokens
+		validTokens := &IDPTokens{
+			AccessToken: "valid",
+			ExpiresAt:   time.Now().Add(time.Hour),
+		}
+		err = storage.StoreIDPTokens(ctx, "valid-session", validTokens)
+		require.NoError(t, err)
+
+		// Run cleanup
+		storage.cleanupExpired()
+
+		// Verify only valid one remains
+		stats := storage.Stats()
+		assert.Equal(t, 1, stats.IDPTokens)
+
+		_, err = storage.GetIDPTokens(ctx, "expired-session")
+		assert.ErrorIs(t, err, fosite.ErrNotFound)
+
+		_, err = storage.GetIDPTokens(ctx, "valid-session")
+		assert.NoError(t, err)
+	})
+
+	t.Run("cleanup expired invalidated codes", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := context.Background()
+		storage := NewMemoryStorage()
+		defer storage.Close()
+
+		client := &mockClient{id: "test-client"}
+
+		// Create and invalidate an auth code, then manually expire the invalidation entry
+		request := newMockRequesterWithExpiration("req-1", client, fosite.AuthorizeCode, time.Now().Add(time.Hour))
+		err := storage.CreateAuthorizeCodeSession(ctx, "code-1", request)
+		require.NoError(t, err)
+		err = storage.InvalidateAuthorizeCodeSession(ctx, "code-1")
+		require.NoError(t, err)
+
+		// Manually expire the invalidated code entry
+		storage.mu.Lock()
+		if entry, ok := storage.invalidatedCodes["code-1"]; ok {
+			entry.expiresAt = time.Now().Add(-time.Hour)
+		}
+		storage.mu.Unlock()
+
+		// Verify the invalidated code exists
+		stats := storage.Stats()
+		assert.Equal(t, 1, stats.InvalidatedCodes)
+
+		// Run cleanup
+		storage.cleanupExpired()
+
+		// Verify the invalidated code entry is removed
+		stats = storage.Stats()
+		assert.Equal(t, 0, stats.InvalidatedCodes)
+	})
+
+	t.Run("cleanup expired client assertion JWTs", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := context.Background()
+		storage := NewMemoryStorage()
+		defer storage.Close()
+
+		// Add an expired JTI
+		err := storage.SetClientAssertionJWT(ctx, "expired-jti", time.Now().Add(-time.Hour))
+		require.NoError(t, err)
+
+		// Add a valid JTI
+		err = storage.SetClientAssertionJWT(ctx, "valid-jti", time.Now().Add(time.Hour))
+		require.NoError(t, err)
+
+		// Run cleanup
+		storage.cleanupExpired()
+
+		// Verify only valid one remains
+		stats := storage.Stats()
+		assert.Equal(t, 1, stats.ClientAssertionJWTs)
+
+		// The expired one should be considered valid (can be reused)
+		err = storage.ClientAssertionJWTValid(ctx, "expired-jti")
+		assert.NoError(t, err)
+
+		// The valid one should still be known
+		err = storage.ClientAssertionJWTValid(ctx, "valid-jti")
+		assert.ErrorIs(t, err, fosite.ErrJTIKnown)
+	})
+}
+
+func TestMemoryStorage_CleanupLoop(t *testing.T) {
+	t.Parallel()
+
+	t.Run("cleanup runs periodically", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := context.Background()
+		// Use a very short interval for testing
+		storage := NewMemoryStorage(WithCleanupInterval(50 * time.Millisecond))
+		defer storage.Close()
+
+		client := &mockClient{id: "test-client"}
+
+		// Create an expired auth code
+		expiredRequest := newMockRequesterWithExpiration("req-expired", client, fosite.AuthorizeCode, time.Now().Add(-time.Hour))
+		err := storage.CreateAuthorizeCodeSession(ctx, "expired-code", expiredRequest)
+		require.NoError(t, err)
+
+		// Verify it exists
+		stats := storage.Stats()
+		assert.Equal(t, 1, stats.AuthCodes)
+
+		// Wait for cleanup to run
+		time.Sleep(100 * time.Millisecond)
+
+		// Verify it was cleaned up
+		stats = storage.Stats()
+		assert.Equal(t, 0, stats.AuthCodes)
+	})
+
+	t.Run("close stops cleanup goroutine", func(t *testing.T) {
+		t.Parallel()
+
+		storage := NewMemoryStorage(WithCleanupInterval(10 * time.Millisecond))
+
+		// Close should not block
+		done := make(chan struct{})
+		go func() {
+			storage.Close()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+			// Success - Close returned
+		case <-time.After(1 * time.Second):
+			t.Fatal("Close did not return in time")
+		}
+	})
+}
+
+func TestMemoryStorage_Stats(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	storage := NewMemoryStorage()
+	defer storage.Close()
+
+	// Initially empty
+	stats := storage.Stats()
+	assert.Equal(t, 0, stats.Clients)
+	assert.Equal(t, 0, stats.AuthCodes)
+	assert.Equal(t, 0, stats.AccessTokens)
+	assert.Equal(t, 0, stats.RefreshTokens)
+	assert.Equal(t, 0, stats.PKCERequests)
+	assert.Equal(t, 0, stats.IDPTokens)
+	assert.Equal(t, 0, stats.InvalidatedCodes)
+	assert.Equal(t, 0, stats.ClientAssertionJWTs)
+
+	// Add some items
+	client := &mockClient{id: "test-client"}
+	storage.RegisterClient(client)
+
+	request := newMockRequester("req-1", client)
+	_ = storage.CreateAuthorizeCodeSession(ctx, "code-1", request)
+	_ = storage.CreateAccessTokenSession(ctx, "access-1", request)
+	_ = storage.CreateRefreshTokenSession(ctx, "refresh-1", "access-1", request)
+	_ = storage.CreatePKCERequestSession(ctx, "pkce-1", request)
+	_ = storage.StoreIDPTokens(ctx, "idp-1", &IDPTokens{AccessToken: "test"})
+	_ = storage.InvalidateAuthorizeCodeSession(ctx, "code-1")
+	_ = storage.SetClientAssertionJWT(ctx, "jti-1", time.Now().Add(time.Hour))
+
+	stats = storage.Stats()
+	assert.Equal(t, 1, stats.Clients)
+	assert.Equal(t, 1, stats.AuthCodes)
+	assert.Equal(t, 1, stats.AccessTokens)
+	assert.Equal(t, 1, stats.RefreshTokens)
+	assert.Equal(t, 1, stats.PKCERequests)
+	assert.Equal(t, 1, stats.IDPTokens)
+	assert.Equal(t, 1, stats.InvalidatedCodes)
+	assert.Equal(t, 1, stats.ClientAssertionJWTs)
+}
+
+func TestGetExpirationFromRequester(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil requester returns default", func(t *testing.T) {
+		t.Parallel()
+
+		defaultTTL := time.Hour
+		before := time.Now()
+		exp := getExpirationFromRequester(nil, fosite.AccessToken, defaultTTL)
+		after := time.Now()
+
+		assert.True(t, exp.After(before.Add(defaultTTL-time.Second)))
+		assert.True(t, exp.Before(after.Add(defaultTTL+time.Second)))
+	})
+
+	t.Run("nil session returns default", func(t *testing.T) {
+		t.Parallel()
+
+		request := &mockRequester{session: nil}
+		defaultTTL := time.Hour
+		before := time.Now()
+		exp := getExpirationFromRequester(request, fosite.AccessToken, defaultTTL)
+		after := time.Now()
+
+		assert.True(t, exp.After(before.Add(defaultTTL-time.Second)))
+		assert.True(t, exp.Before(after.Add(defaultTTL+time.Second)))
+	})
+
+	t.Run("zero expiration returns default", func(t *testing.T) {
+		t.Parallel()
+
+		// Session without expiration set
+		session := NewSession("test", "idp")
+		request := &mockRequester{session: session}
+		defaultTTL := time.Hour
+		before := time.Now()
+		exp := getExpirationFromRequester(request, fosite.AccessToken, defaultTTL)
+		after := time.Now()
+
+		assert.True(t, exp.After(before.Add(defaultTTL-time.Second)))
+		assert.True(t, exp.Before(after.Add(defaultTTL+time.Second)))
+	})
+
+	t.Run("valid expiration is returned", func(t *testing.T) {
+		t.Parallel()
+
+		expectedExp := time.Now().Add(2 * time.Hour)
+		session := NewSession("test", "idp")
+		session.SetExpiresAt(fosite.AccessToken, expectedExp)
+		request := &mockRequester{session: session}
+
+		exp := getExpirationFromRequester(request, fosite.AccessToken, time.Hour)
+
+		assert.WithinDuration(t, expectedExp, exp, time.Second)
+	})
+}
+
 // --- Concurrent Access Tests ---
 
 func TestMemoryStorage_ConcurrentAccess(t *testing.T) {
@@ -598,6 +1054,8 @@ func TestMemoryStorage_ConcurrentAccess(t *testing.T) {
 		t.Parallel()
 
 		storage := NewMemoryStorage()
+		defer storage.Close()
+
 		ctx := context.Background()
 		client := &mockClient{id: "test-client"}
 
@@ -621,6 +1079,8 @@ func TestMemoryStorage_ConcurrentAccess(t *testing.T) {
 		t.Parallel()
 
 		storage := NewMemoryStorage()
+		defer storage.Close()
+
 		ctx := context.Background()
 		client := &mockClient{id: "test-client"}
 
@@ -655,6 +1115,8 @@ func TestMemoryStorage_ConcurrentAccess(t *testing.T) {
 		t.Parallel()
 
 		storage := NewMemoryStorage()
+		defer storage.Close()
+
 		ctx := context.Background()
 
 		var wg sync.WaitGroup
@@ -672,6 +1134,44 @@ func TestMemoryStorage_ConcurrentAccess(t *testing.T) {
 			go func(idx int) {
 				defer wg.Done()
 				_, _ = storage.GetClient(ctx, fmt.Sprintf("client-%d", idx))
+			}(i)
+		}
+
+		wg.Wait()
+
+		// Verify all clients were successfully registered
+		for i := 0; i < numGoroutines; i++ {
+			client, err := storage.GetClient(ctx, fmt.Sprintf("client-%d", i))
+			require.NoError(t, err, "client-%d should exist", i)
+			require.NotNil(t, client, "client-%d should not be nil", i)
+			assert.Equal(t, fmt.Sprintf("client-%d", i), client.GetID())
+		}
+	})
+
+	t.Run("concurrent cleanup with writes", func(t *testing.T) {
+		t.Parallel()
+
+		storage := NewMemoryStorage()
+		defer storage.Close()
+
+		ctx := context.Background()
+		client := &mockClient{id: "test-client"}
+
+		var wg sync.WaitGroup
+		numGoroutines := 50
+
+		for i := 0; i < numGoroutines; i++ {
+			wg.Add(2)
+			// Writer
+			go func(idx int) {
+				defer wg.Done()
+				request := newMockRequester(fmt.Sprintf("req-%d", idx), client)
+				_ = storage.CreateAccessTokenSession(ctx, fmt.Sprintf("token-%d", idx), request)
+			}(i)
+			// Cleanup trigger
+			go func(_ int) {
+				defer wg.Done()
+				storage.cleanupExpired()
 			}(i)
 		}
 

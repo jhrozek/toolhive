@@ -6,7 +6,36 @@ import (
 	"time"
 
 	"github.com/ory/fosite"
+	"github.com/stacklok/toolhive/pkg/logger"
 )
+
+// Default TTL values for various token types (based on OAuth 2.0 best practices).
+const (
+	// DefaultAuthCodeTTL is the default TTL for authorization codes (RFC 6749 recommendation).
+	DefaultAuthCodeTTL = 10 * time.Minute
+
+	// DefaultInvalidatedCodeTTL is how long invalidated codes are kept for replay detection.
+	DefaultInvalidatedCodeTTL = 30 * time.Minute
+
+	// DefaultPKCETTL is the default TTL for PKCE requests (same as auth codes).
+	DefaultPKCETTL = 10 * time.Minute
+
+	// DefaultAccessTokenTTL is the default TTL for access tokens when not extractable from session.
+	DefaultAccessTokenTTL = 1 * time.Hour
+
+	// DefaultRefreshTokenTTL is the default TTL for refresh tokens when not extractable from session.
+	DefaultRefreshTokenTTL = 30 * 24 * time.Hour // 30 days
+
+	// DefaultCleanupInterval is how often the background cleanup runs.
+	DefaultCleanupInterval = 5 * time.Minute
+)
+
+// timedEntry wraps a value with its creation time for TTL tracking.
+type timedEntry[T any] struct {
+	value     T
+	createdAt time.Time
+	expiresAt time.Time
+}
 
 // MemoryStorage implements the Storage interface with in-memory maps.
 // This implementation is thread-safe and suitable for development and testing.
@@ -15,31 +44,165 @@ type MemoryStorage struct {
 	mu sync.RWMutex
 
 	clients       map[string]fosite.Client
-	authCodes     map[string]fosite.Requester
-	accessTokens  map[string]fosite.Requester
-	refreshTokens map[string]fosite.Requester
-	pkceRequests  map[string]fosite.Requester
-	idpTokens     map[string]*IDPTokens
+	authCodes     map[string]*timedEntry[fosite.Requester]
+	accessTokens  map[string]*timedEntry[fosite.Requester]
+	refreshTokens map[string]*timedEntry[fosite.Requester]
+	pkceRequests  map[string]*timedEntry[fosite.Requester]
+	idpTokens     map[string]*timedEntry[*IDPTokens]
 
 	// invalidatedCodes tracks auth codes that have been used/invalidated
-	invalidatedCodes map[string]bool
+	invalidatedCodes map[string]*timedEntry[bool]
 
 	// clientAssertionJWTs tracks JTIs to prevent JWT replay attacks
 	clientAssertionJWTs map[string]time.Time
+
+	// cleanupInterval is how often the background cleanup runs
+	cleanupInterval time.Duration
+
+	// stopCleanup is used to signal the cleanup goroutine to stop
+	stopCleanup chan struct{}
+
+	// cleanupDone is closed when the cleanup goroutine has fully stopped
+	cleanupDone chan struct{}
 }
 
-// NewMemoryStorage creates a new MemoryStorage instance with initialized maps.
-func NewMemoryStorage() *MemoryStorage {
-	return &MemoryStorage{
-		clients:             make(map[string]fosite.Client),
-		authCodes:           make(map[string]fosite.Requester),
-		accessTokens:        make(map[string]fosite.Requester),
-		refreshTokens:       make(map[string]fosite.Requester),
-		pkceRequests:        make(map[string]fosite.Requester),
-		idpTokens:           make(map[string]*IDPTokens),
-		invalidatedCodes:    make(map[string]bool),
-		clientAssertionJWTs: make(map[string]time.Time),
+// MemoryStorageOption configures a MemoryStorage instance.
+type MemoryStorageOption func(*MemoryStorage)
+
+// WithCleanupInterval sets a custom cleanup interval.
+func WithCleanupInterval(interval time.Duration) MemoryStorageOption {
+	return func(s *MemoryStorage) {
+		s.cleanupInterval = interval
 	}
+}
+
+// NewMemoryStorage creates a new MemoryStorage instance with initialized maps
+// and starts the background cleanup goroutine.
+func NewMemoryStorage(opts ...MemoryStorageOption) *MemoryStorage {
+	s := &MemoryStorage{
+		clients:             make(map[string]fosite.Client),
+		authCodes:           make(map[string]*timedEntry[fosite.Requester]),
+		accessTokens:        make(map[string]*timedEntry[fosite.Requester]),
+		refreshTokens:       make(map[string]*timedEntry[fosite.Requester]),
+		pkceRequests:        make(map[string]*timedEntry[fosite.Requester]),
+		idpTokens:           make(map[string]*timedEntry[*IDPTokens]),
+		invalidatedCodes:    make(map[string]*timedEntry[bool]),
+		clientAssertionJWTs: make(map[string]time.Time),
+		cleanupInterval:     DefaultCleanupInterval,
+		stopCleanup:         make(chan struct{}),
+		cleanupDone:         make(chan struct{}),
+	}
+
+	for _, opt := range opts {
+		opt(s)
+	}
+
+	// Start background cleanup goroutine
+	go s.cleanupLoop()
+
+	return s
+}
+
+// Close stops the background cleanup goroutine and waits for it to finish.
+// This should be called when the storage is no longer needed.
+func (s *MemoryStorage) Close() {
+	close(s.stopCleanup)
+	<-s.cleanupDone
+}
+
+// cleanupLoop runs periodic cleanup of expired entries.
+func (s *MemoryStorage) cleanupLoop() {
+	defer close(s.cleanupDone)
+
+	ticker := time.NewTicker(s.cleanupInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.stopCleanup:
+			return
+		case <-ticker.C:
+			s.cleanupExpired()
+		}
+	}
+}
+
+// cleanupExpired removes all expired entries from storage.
+func (s *MemoryStorage) cleanupExpired() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+
+	// Clean up auth codes
+	for k, v := range s.authCodes {
+		if now.After(v.expiresAt) {
+			delete(s.authCodes, k)
+			delete(s.invalidatedCodes, k)
+		}
+	}
+
+	// Clean up invalidated codes that are no longer needed
+	for k, v := range s.invalidatedCodes {
+		if now.After(v.expiresAt) {
+			delete(s.invalidatedCodes, k)
+		}
+	}
+
+	// Clean up access tokens
+	for k, v := range s.accessTokens {
+		if now.After(v.expiresAt) {
+			delete(s.accessTokens, k)
+		}
+	}
+
+	// Clean up refresh tokens
+	for k, v := range s.refreshTokens {
+		if now.After(v.expiresAt) {
+			delete(s.refreshTokens, k)
+		}
+	}
+
+	// Clean up PKCE requests
+	for k, v := range s.pkceRequests {
+		if now.After(v.expiresAt) {
+			delete(s.pkceRequests, k)
+		}
+	}
+
+	// Clean up IDP tokens
+	for k, v := range s.idpTokens {
+		if now.After(v.expiresAt) {
+			delete(s.idpTokens, k)
+		}
+	}
+
+	// Clean up expired JTIs
+	for k, v := range s.clientAssertionJWTs {
+		if now.After(v) {
+			delete(s.clientAssertionJWTs, k)
+		}
+	}
+}
+
+// getExpirationFromRequester extracts expiration time from a fosite.Requester session.
+// Returns the provided default if expiration cannot be extracted.
+func getExpirationFromRequester(request fosite.Requester, tokenType fosite.TokenType, defaultTTL time.Duration) time.Time {
+	if request == nil {
+		return time.Now().Add(defaultTTL)
+	}
+
+	session := request.GetSession()
+	if session == nil {
+		return time.Now().Add(defaultTTL)
+	}
+
+	expTime := session.GetExpiresAt(tokenType)
+	if expTime.IsZero() {
+		return time.Now().Add(defaultTTL)
+	}
+
+	return expTime
 }
 
 // RegisterClient adds or updates a client in the storage.
@@ -61,7 +224,8 @@ func (s *MemoryStorage) GetClient(_ context.Context, id string) (fosite.Client, 
 
 	client, ok := s.clients[id]
 	if !ok {
-		return nil, fosite.ErrNotFound.WithHintf("Client with ID '%s' not found", id)
+		logger.Debugw("client not found", "client_id", id)
+		return nil, fosite.ErrNotFound.WithHint("Client not found")
 	}
 	return client, nil
 }
@@ -104,10 +268,24 @@ func (s *MemoryStorage) SetClientAssertionJWT(_ context.Context, jti string, exp
 
 // CreateAuthorizeCodeSession stores the authorization request for a given authorization code.
 func (s *MemoryStorage) CreateAuthorizeCodeSession(_ context.Context, code string, request fosite.Requester) error {
+	if code == "" {
+		return fosite.ErrInvalidRequest.WithHint("authorization code cannot be empty")
+	}
+	if request == nil {
+		return fosite.ErrInvalidRequest.WithHint("request cannot be nil")
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.authCodes[code] = request
+	now := time.Now()
+	expiresAt := getExpirationFromRequester(request, fosite.AuthorizeCode, DefaultAuthCodeTTL)
+
+	s.authCodes[code] = &timedEntry[fosite.Requester]{
+		value:     request,
+		createdAt: now,
+		expiresAt: expiresAt,
+	}
 	return nil
 }
 
@@ -118,18 +296,19 @@ func (s *MemoryStorage) GetAuthorizeCodeSession(_ context.Context, code string, 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	request, ok := s.authCodes[code]
+	entry, ok := s.authCodes[code]
 	if !ok {
-		return nil, fosite.ErrNotFound.WithHintf("Authorization code '%s' not found", code)
+		logger.Debugw("authorization code not found", "code", code)
+		return nil, fosite.ErrNotFound.WithHint("Authorization code not found")
 	}
 
 	// Check if the code has been invalidated
-	if s.invalidatedCodes[code] {
+	if s.invalidatedCodes[code] != nil {
 		// Must return the request along with the error as per fosite documentation
-		return request, fosite.ErrInvalidatedAuthorizeCode
+		return entry.value, fosite.ErrInvalidatedAuthorizeCode
 	}
 
-	return request, nil
+	return entry.value, nil
 }
 
 // InvalidateAuthorizeCodeSession marks an authorization code as used/invalid.
@@ -139,10 +318,16 @@ func (s *MemoryStorage) InvalidateAuthorizeCodeSession(_ context.Context, code s
 	defer s.mu.Unlock()
 
 	if _, ok := s.authCodes[code]; !ok {
-		return fosite.ErrNotFound.WithHintf("Authorization code '%s' not found", code)
+		logger.Debugw("authorization code not found for invalidation", "code", code)
+		return fosite.ErrNotFound.WithHint("Authorization code not found")
 	}
 
-	s.invalidatedCodes[code] = true
+	now := time.Now()
+	s.invalidatedCodes[code] = &timedEntry[bool]{
+		value:     true,
+		createdAt: now,
+		expiresAt: now.Add(DefaultInvalidatedCodeTTL),
+	}
 	return nil
 }
 
@@ -152,10 +337,24 @@ func (s *MemoryStorage) InvalidateAuthorizeCodeSession(_ context.Context, code s
 
 // CreateAccessTokenSession stores the access token session.
 func (s *MemoryStorage) CreateAccessTokenSession(_ context.Context, signature string, request fosite.Requester) error {
+	if signature == "" {
+		return fosite.ErrInvalidRequest.WithHint("access token signature cannot be empty")
+	}
+	if request == nil {
+		return fosite.ErrInvalidRequest.WithHint("request cannot be nil")
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.accessTokens[signature] = request
+	now := time.Now()
+	expiresAt := getExpirationFromRequester(request, fosite.AccessToken, DefaultAccessTokenTTL)
+
+	s.accessTokens[signature] = &timedEntry[fosite.Requester]{
+		value:     request,
+		createdAt: now,
+		expiresAt: expiresAt,
+	}
 	return nil
 }
 
@@ -164,11 +363,12 @@ func (s *MemoryStorage) GetAccessTokenSession(_ context.Context, signature strin
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	request, ok := s.accessTokens[signature]
+	entry, ok := s.accessTokens[signature]
 	if !ok {
-		return nil, fosite.ErrNotFound.WithHintf("Access token with signature '%s' not found", signature)
+		logger.Debugw("access token not found", "signature", signature)
+		return nil, fosite.ErrNotFound.WithHint("Access token not found")
 	}
-	return request, nil
+	return entry.value, nil
 }
 
 // DeleteAccessTokenSession removes the access token session.
@@ -176,6 +376,9 @@ func (s *MemoryStorage) DeleteAccessTokenSession(_ context.Context, signature st
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if _, ok := s.accessTokens[signature]; !ok {
+		return fosite.ErrNotFound.WithHint("Access token not found")
+	}
 	delete(s.accessTokens, signature)
 	return nil
 }
@@ -186,11 +389,27 @@ func (s *MemoryStorage) DeleteAccessTokenSession(_ context.Context, signature st
 
 // CreateRefreshTokenSession stores the refresh token session.
 // The accessSignature parameter is used to link the refresh token to its access token.
+// TODO: Store the accessSignature in a refreshToAccess map to enable direct lookup
+// during token rotation instead of O(n) scan by request ID in RotateRefreshToken.
 func (s *MemoryStorage) CreateRefreshTokenSession(_ context.Context, signature string, _ string, request fosite.Requester) error {
+	if signature == "" {
+		return fosite.ErrInvalidRequest.WithHint("refresh token signature cannot be empty")
+	}
+	if request == nil {
+		return fosite.ErrInvalidRequest.WithHint("request cannot be nil")
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.refreshTokens[signature] = request
+	now := time.Now()
+	expiresAt := getExpirationFromRequester(request, fosite.RefreshToken, DefaultRefreshTokenTTL)
+
+	s.refreshTokens[signature] = &timedEntry[fosite.Requester]{
+		value:     request,
+		createdAt: now,
+		expiresAt: expiresAt,
+	}
 	return nil
 }
 
@@ -199,11 +418,12 @@ func (s *MemoryStorage) GetRefreshTokenSession(_ context.Context, signature stri
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	request, ok := s.refreshTokens[signature]
+	entry, ok := s.refreshTokens[signature]
 	if !ok {
-		return nil, fosite.ErrNotFound.WithHintf("Refresh token with signature '%s' not found", signature)
+		logger.Debugw("refresh token not found", "signature", signature)
+		return nil, fosite.ErrNotFound.WithHint("Refresh token not found")
 	}
-	return request, nil
+	return entry.value, nil
 }
 
 // DeleteRefreshTokenSession removes the refresh token session.
@@ -211,6 +431,9 @@ func (s *MemoryStorage) DeleteRefreshTokenSession(_ context.Context, signature s
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if _, ok := s.refreshTokens[signature]; !ok {
+		return fosite.ErrNotFound.WithHint("Refresh token not found")
+	}
 	delete(s.refreshTokens, signature)
 	return nil
 }
@@ -224,9 +447,11 @@ func (s *MemoryStorage) RotateRefreshToken(_ context.Context, requestID string, 
 	// Delete the specific refresh token
 	delete(s.refreshTokens, refreshTokenSignature)
 
+	// TODO: Use the refreshToAccess map (once implemented) for direct access token lookup
+	// instead of O(n) scan by request ID, which may delete unrelated tokens sharing the same ID.
 	// Also delete any access tokens associated with this request ID
-	for sig, req := range s.accessTokens {
-		if req.GetID() == requestID {
+	for sig, entry := range s.accessTokens {
+		if entry.value.GetID() == requestID {
 			delete(s.accessTokens, sig)
 		}
 	}
@@ -240,10 +465,24 @@ func (s *MemoryStorage) RotateRefreshToken(_ context.Context, requestID string, 
 
 // CreatePKCERequestSession stores the PKCE request session.
 func (s *MemoryStorage) CreatePKCERequestSession(_ context.Context, signature string, request fosite.Requester) error {
+	if signature == "" {
+		return fosite.ErrInvalidRequest.WithHint("PKCE signature cannot be empty")
+	}
+	if request == nil {
+		return fosite.ErrInvalidRequest.WithHint("request cannot be nil")
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.pkceRequests[signature] = request
+	now := time.Now()
+	expiresAt := getExpirationFromRequester(request, fosite.AuthorizeCode, DefaultPKCETTL)
+
+	s.pkceRequests[signature] = &timedEntry[fosite.Requester]{
+		value:     request,
+		createdAt: now,
+		expiresAt: expiresAt,
+	}
 	return nil
 }
 
@@ -252,11 +491,12 @@ func (s *MemoryStorage) GetPKCERequestSession(_ context.Context, signature strin
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	request, ok := s.pkceRequests[signature]
+	entry, ok := s.pkceRequests[signature]
 	if !ok {
-		return nil, fosite.ErrNotFound.WithHintf("PKCE request with signature '%s' not found", signature)
+		logger.Debugw("PKCE request not found", "signature", signature)
+		return nil, fosite.ErrNotFound.WithHint("PKCE request not found")
 	}
-	return request, nil
+	return entry.value, nil
 }
 
 // DeletePKCERequestSession removes the PKCE request session.
@@ -264,6 +504,9 @@ func (s *MemoryStorage) DeletePKCERequestSession(_ context.Context, signature st
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if _, ok := s.pkceRequests[signature]; !ok {
+		return fosite.ErrNotFound.WithHint("PKCE request not found")
+	}
 	delete(s.pkceRequests, signature)
 	return nil
 }
@@ -273,11 +516,39 @@ func (s *MemoryStorage) DeletePKCERequestSession(_ context.Context, signature st
 // -----------------------
 
 // StoreIDPTokens stores the upstream IDP tokens for a session.
+// A defensive copy is made to prevent aliasing issues.
 func (s *MemoryStorage) StoreIDPTokens(_ context.Context, sessionID string, tokens *IDPTokens) error {
+	if sessionID == "" {
+		return fosite.ErrInvalidRequest.WithHint("session ID cannot be empty")
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.idpTokens[sessionID] = tokens
+	now := time.Now()
+	var expiresAt time.Time
+	if tokens != nil && !tokens.ExpiresAt.IsZero() {
+		expiresAt = tokens.ExpiresAt
+	} else {
+		expiresAt = now.Add(DefaultAccessTokenTTL)
+	}
+
+	// Make a defensive copy to prevent aliasing issues
+	var tokensCopy *IDPTokens
+	if tokens != nil {
+		tokensCopy = &IDPTokens{
+			AccessToken:  tokens.AccessToken,
+			RefreshToken: tokens.RefreshToken,
+			IDToken:      tokens.IDToken,
+			ExpiresAt:    tokens.ExpiresAt,
+		}
+	}
+
+	s.idpTokens[sessionID] = &timedEntry[*IDPTokens]{
+		value:     tokensCopy,
+		createdAt: now,
+		expiresAt: expiresAt,
+	}
 	return nil
 }
 
@@ -286,11 +557,12 @@ func (s *MemoryStorage) GetIDPTokens(_ context.Context, sessionID string) (*IDPT
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	tokens, ok := s.idpTokens[sessionID]
+	entry, ok := s.idpTokens[sessionID]
 	if !ok {
-		return nil, fosite.ErrNotFound.WithHintf("IDP tokens for session '%s' not found", sessionID)
+		logger.Debugw("IDP tokens not found", "session_id", sessionID)
+		return nil, fosite.ErrNotFound.WithHint("IDP tokens not found")
 	}
-	return tokens, nil
+	return entry.value, nil
 }
 
 // DeleteIDPTokens removes the upstream IDP tokens for a session.
@@ -298,8 +570,45 @@ func (s *MemoryStorage) DeleteIDPTokens(_ context.Context, sessionID string) err
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if _, ok := s.idpTokens[sessionID]; !ok {
+		return fosite.ErrNotFound.WithHint("IDP tokens not found")
+	}
 	delete(s.idpTokens, sessionID)
 	return nil
+}
+
+// -----------------------
+// Metrics/Stats (for testing and monitoring)
+// -----------------------
+
+// StorageStats contains statistics about the storage contents.
+type StorageStats struct {
+	Clients             int
+	AuthCodes           int
+	AccessTokens        int
+	RefreshTokens       int
+	PKCERequests        int
+	IDPTokens           int
+	InvalidatedCodes    int
+	ClientAssertionJWTs int
+}
+
+// Stats returns current statistics about storage contents.
+// This is useful for testing and monitoring.
+func (s *MemoryStorage) Stats() StorageStats {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return StorageStats{
+		Clients:             len(s.clients),
+		AuthCodes:           len(s.authCodes),
+		AccessTokens:        len(s.accessTokens),
+		RefreshTokens:       len(s.refreshTokens),
+		PKCERequests:        len(s.pkceRequests),
+		IDPTokens:           len(s.idpTokens),
+		InvalidatedCodes:    len(s.invalidatedCodes),
+		ClientAssertionJWTs: len(s.clientAssertionJWTs),
+	}
 }
 
 // Compile-time interface compliance check
