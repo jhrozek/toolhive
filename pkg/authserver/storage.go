@@ -1,5 +1,7 @@
 package authserver
 
+//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=storage.go Storage,IDPTokenStorage
+
 import (
 	"context"
 	"time"
