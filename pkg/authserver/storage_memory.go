@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ory/fosite"
+
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
@@ -457,6 +458,49 @@ func (s *MemoryStorage) RotateRefreshToken(_ context.Context, requestID string, 
 	}
 
 	return nil
+}
+
+// -----------------------
+// oauth2.TokenRevocationStorage
+// -----------------------
+
+// RevokeAccessToken marks an access token as revoked.
+// This method implements the oauth2.TokenRevocationStorage interface.
+func (s *MemoryStorage) RevokeAccessToken(_ context.Context, requestID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Find and remove all access tokens associated with this request ID
+	for sig, entry := range s.accessTokens {
+		if entry.value.GetID() == requestID {
+			delete(s.accessTokens, sig)
+		}
+	}
+
+	return nil
+}
+
+// RevokeRefreshToken marks a refresh token as revoked.
+// This method implements the oauth2.TokenRevocationStorage interface.
+func (s *MemoryStorage) RevokeRefreshToken(_ context.Context, requestID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Find and remove all refresh tokens associated with this request ID
+	for sig, entry := range s.refreshTokens {
+		if entry.value.GetID() == requestID {
+			delete(s.refreshTokens, sig)
+		}
+	}
+
+	return nil
+}
+
+// RevokeRefreshTokenMaybeGracePeriod marks a refresh token as revoked, optionally allowing
+// a grace period during which the old token is still valid.
+// For this implementation, we don't support grace periods and revoke immediately.
+func (s *MemoryStorage) RevokeRefreshTokenMaybeGracePeriod(ctx context.Context, requestID string, _ string) error {
+	return s.RevokeRefreshToken(ctx, requestID)
 }
 
 // -----------------------
