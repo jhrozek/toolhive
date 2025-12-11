@@ -58,6 +58,16 @@ type Storage interface {
 
 	// DeleteIDPTokens removes the upstream IDP tokens for a session.
 	DeleteIDPTokens(ctx context.Context, sessionID string) error
+
+	// StorePendingAuthorization stores a pending authorization request.
+	// The state is used to correlate the upstream IDP callback.
+	StorePendingAuthorization(ctx context.Context, state string, pending *PendingAuthorization) error
+
+	// LoadPendingAuthorization retrieves a pending authorization by internal state.
+	LoadPendingAuthorization(ctx context.Context, state string) (*PendingAuthorization, error)
+
+	// DeletePendingAuthorization removes a pending authorization.
+	DeletePendingAuthorization(ctx context.Context, state string) error
 }
 
 // IDPTokenStorage provides storage for upstream IDP tokens.

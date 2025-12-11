@@ -13,6 +13,9 @@ import (
 	"time"
 )
 
+// PKCEChallengeMethodS256 is the PKCE challenge method for SHA-256.
+const PKCEChallengeMethodS256 = "S256"
+
 // UpstreamProvider handles communication with an upstream Identity Provider.
 type UpstreamProvider interface {
 	// Name returns the provider name (e.g., "google", "oidc").
@@ -172,11 +175,11 @@ func (p *OIDCUpstreamProvider) AuthorizationURL(state, codeChallenge string, sco
 	if codeChallenge != "" {
 		if p.supportsPKCE() {
 			params.Set("code_challenge", codeChallenge)
-			params.Set("code_challenge_method", "S256")
+			params.Set("code_challenge_method", PKCEChallengeMethodS256)
 		} else {
 			p.logger.Warn("PKCE code challenge provided but provider does not advertise S256 support, sending anyway")
 			params.Set("code_challenge", codeChallenge)
-			params.Set("code_challenge_method", "S256")
+			params.Set("code_challenge_method", PKCEChallengeMethodS256)
 		}
 	}
 
@@ -424,7 +427,7 @@ func (p *OIDCUpstreamProvider) supportsPKCE() bool {
 		return false
 	}
 	for _, method := range p.endpoints.CodeChallengeMethodsSupported {
-		if method == "S256" {
+		if method == PKCEChallengeMethodS256 {
 			return true
 		}
 	}

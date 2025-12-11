@@ -51,6 +51,9 @@ type MemoryStorage struct {
 	pkceRequests  map[string]*timedEntry[fosite.Requester]
 	idpTokens     map[string]*timedEntry[*IDPTokens]
 
+	// pendingAuthorizations tracks authorization requests awaiting upstream IDP callback
+	pendingAuthorizations map[string]*timedEntry[*PendingAuthorization]
+
 	// invalidatedCodes tracks auth codes that have been used/invalidated
 	invalidatedCodes map[string]*timedEntry[bool]
 
@@ -81,17 +84,18 @@ func WithCleanupInterval(interval time.Duration) MemoryStorageOption {
 // and starts the background cleanup goroutine.
 func NewMemoryStorage(opts ...MemoryStorageOption) *MemoryStorage {
 	s := &MemoryStorage{
-		clients:             make(map[string]fosite.Client),
-		authCodes:           make(map[string]*timedEntry[fosite.Requester]),
-		accessTokens:        make(map[string]*timedEntry[fosite.Requester]),
-		refreshTokens:       make(map[string]*timedEntry[fosite.Requester]),
-		pkceRequests:        make(map[string]*timedEntry[fosite.Requester]),
-		idpTokens:           make(map[string]*timedEntry[*IDPTokens]),
-		invalidatedCodes:    make(map[string]*timedEntry[bool]),
-		clientAssertionJWTs: make(map[string]time.Time),
-		cleanupInterval:     DefaultCleanupInterval,
-		stopCleanup:         make(chan struct{}),
-		cleanupDone:         make(chan struct{}),
+		clients:               make(map[string]fosite.Client),
+		authCodes:             make(map[string]*timedEntry[fosite.Requester]),
+		accessTokens:          make(map[string]*timedEntry[fosite.Requester]),
+		refreshTokens:         make(map[string]*timedEntry[fosite.Requester]),
+		pkceRequests:          make(map[string]*timedEntry[fosite.Requester]),
+		idpTokens:             make(map[string]*timedEntry[*IDPTokens]),
+		pendingAuthorizations: make(map[string]*timedEntry[*PendingAuthorization]),
+		invalidatedCodes:      make(map[string]*timedEntry[bool]),
+		clientAssertionJWTs:   make(map[string]time.Time),
+		cleanupInterval:       DefaultCleanupInterval,
+		stopCleanup:           make(chan struct{}),
+		cleanupDone:           make(chan struct{}),
 	}
 
 	for _, opt := range opts {
@@ -129,6 +133,8 @@ func (s *MemoryStorage) cleanupLoop() {
 }
 
 // cleanupExpired removes all expired entries from storage.
+//
+//nolint:gocyclo // Function is straightforward, just repetitive cleanup loops for each storage type
 func (s *MemoryStorage) cleanupExpired() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -175,6 +181,13 @@ func (s *MemoryStorage) cleanupExpired() {
 	for k, v := range s.idpTokens {
 		if now.After(v.expiresAt) {
 			delete(s.idpTokens, k)
+		}
+	}
+
+	// Clean up pending authorizations
+	for k, v := range s.pendingAuthorizations {
+		if now.After(v.expiresAt) {
+			delete(s.pendingAuthorizations, k)
 		}
 	}
 
@@ -622,19 +635,93 @@ func (s *MemoryStorage) DeleteIDPTokens(_ context.Context, sessionID string) err
 }
 
 // -----------------------
+// Pending Authorization Storage
+// -----------------------
+
+// StorePendingAuthorization stores a pending authorization request.
+// The pending authorization is keyed by the internal state used to correlate
+// the upstream IDP callback.
+func (s *MemoryStorage) StorePendingAuthorization(_ context.Context, state string, pending *PendingAuthorization) error {
+	if state == "" {
+		return fosite.ErrInvalidRequest.WithHint("state cannot be empty")
+	}
+	if pending == nil {
+		return fosite.ErrInvalidRequest.WithHint("pending authorization cannot be nil")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	expiresAt := now.Add(DefaultPendingAuthorizationTTL)
+
+	// Make a defensive copy to prevent aliasing issues
+	pendingCopy := &PendingAuthorization{
+		ClientID:      pending.ClientID,
+		RedirectURI:   pending.RedirectURI,
+		State:         pending.State,
+		PKCEChallenge: pending.PKCEChallenge,
+		PKCEMethod:    pending.PKCEMethod,
+		Scopes:        append([]string(nil), pending.Scopes...),
+		InternalState: pending.InternalState,
+		CreatedAt:     pending.CreatedAt,
+	}
+
+	s.pendingAuthorizations[state] = &timedEntry[*PendingAuthorization]{
+		value:     pendingCopy,
+		createdAt: now,
+		expiresAt: expiresAt,
+	}
+	return nil
+}
+
+// LoadPendingAuthorization retrieves a pending authorization by internal state.
+func (s *MemoryStorage) LoadPendingAuthorization(_ context.Context, state string) (*PendingAuthorization, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	entry, ok := s.pendingAuthorizations[state]
+	if !ok {
+		logger.Debugw("pending authorization not found", "state", state)
+		return nil, fosite.ErrNotFound.WithHint("Pending authorization not found")
+	}
+
+	// Check if expired
+	if time.Now().After(entry.expiresAt) {
+		logger.Debugw("pending authorization expired", "state", state)
+		return nil, fosite.ErrNotFound.WithHint("Pending authorization expired")
+	}
+
+	return entry.value, nil
+}
+
+// DeletePendingAuthorization removes a pending authorization.
+func (s *MemoryStorage) DeletePendingAuthorization(_ context.Context, state string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.pendingAuthorizations[state]; !ok {
+		return fosite.ErrNotFound.WithHint("Pending authorization not found")
+	}
+	delete(s.pendingAuthorizations, state)
+	return nil
+}
+
+// -----------------------
 // Metrics/Stats (for testing and monitoring)
 // -----------------------
 
 // StorageStats contains statistics about the storage contents.
 type StorageStats struct {
-	Clients             int
-	AuthCodes           int
-	AccessTokens        int
-	RefreshTokens       int
-	PKCERequests        int
-	IDPTokens           int
-	InvalidatedCodes    int
-	ClientAssertionJWTs int
+	Clients               int
+	AuthCodes             int
+	AccessTokens          int
+	RefreshTokens         int
+	PKCERequests          int
+	IDPTokens             int
+	PendingAuthorizations int
+	InvalidatedCodes      int
+	ClientAssertionJWTs   int
 }
 
 // Stats returns current statistics about storage contents.
@@ -644,14 +731,15 @@ func (s *MemoryStorage) Stats() StorageStats {
 	defer s.mu.RUnlock()
 
 	return StorageStats{
-		Clients:             len(s.clients),
-		AuthCodes:           len(s.authCodes),
-		AccessTokens:        len(s.accessTokens),
-		RefreshTokens:       len(s.refreshTokens),
-		PKCERequests:        len(s.pkceRequests),
-		IDPTokens:           len(s.idpTokens),
-		InvalidatedCodes:    len(s.invalidatedCodes),
-		ClientAssertionJWTs: len(s.clientAssertionJWTs),
+		Clients:               len(s.clients),
+		AuthCodes:             len(s.authCodes),
+		AccessTokens:          len(s.accessTokens),
+		RefreshTokens:         len(s.refreshTokens),
+		PKCERequests:          len(s.pkceRequests),
+		IDPTokens:             len(s.idpTokens),
+		PendingAuthorizations: len(s.pendingAuthorizations),
+		InvalidatedCodes:      len(s.invalidatedCodes),
+		ClientAssertionJWTs:   len(s.clientAssertionJWTs),
 	}
 }
 

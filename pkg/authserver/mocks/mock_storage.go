@@ -155,6 +155,20 @@ func (mr *MockStorageMockRecorder) DeletePKCERequestSession(ctx, signature any) 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeletePKCERequestSession", reflect.TypeOf((*MockStorage)(nil).DeletePKCERequestSession), ctx, signature)
 }
 
+// DeletePendingAuthorization mocks base method.
+func (m *MockStorage) DeletePendingAuthorization(ctx context.Context, state string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeletePendingAuthorization", ctx, state)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// DeletePendingAuthorization indicates an expected call of DeletePendingAuthorization.
+func (mr *MockStorageMockRecorder) DeletePendingAuthorization(ctx, state any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeletePendingAuthorization", reflect.TypeOf((*MockStorage)(nil).DeletePendingAuthorization), ctx, state)
+}
+
 // DeleteRefreshTokenSession mocks base method.
 func (m *MockStorage) DeleteRefreshTokenSession(ctx context.Context, signature string) error {
 	m.ctrl.T.Helper()
@@ -273,6 +287,21 @@ func (mr *MockStorageMockRecorder) InvalidateAuthorizeCodeSession(ctx, code any)
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InvalidateAuthorizeCodeSession", reflect.TypeOf((*MockStorage)(nil).InvalidateAuthorizeCodeSession), ctx, code)
 }
 
+// LoadPendingAuthorization mocks base method.
+func (m *MockStorage) LoadPendingAuthorization(ctx context.Context, state string) (*authserver.PendingAuthorization, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "LoadPendingAuthorization", ctx, state)
+	ret0, _ := ret[0].(*authserver.PendingAuthorization)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// LoadPendingAuthorization indicates an expected call of LoadPendingAuthorization.
+func (mr *MockStorageMockRecorder) LoadPendingAuthorization(ctx, state any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LoadPendingAuthorization", reflect.TypeOf((*MockStorage)(nil).LoadPendingAuthorization), ctx, state)
+}
+
 // RotateRefreshToken mocks base method.
 func (m *MockStorage) RotateRefreshToken(ctx context.Context, requestID, refreshTokenSignature string) error {
 	m.ctrl.T.Helper()
@@ -313,6 +342,20 @@ func (m *MockStorage) StoreIDPTokens(ctx context.Context, sessionID string, toke
 func (mr *MockStorageMockRecorder) StoreIDPTokens(ctx, sessionID, tokens any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StoreIDPTokens", reflect.TypeOf((*MockStorage)(nil).StoreIDPTokens), ctx, sessionID, tokens)
+}
+
+// StorePendingAuthorization mocks base method.
+func (m *MockStorage) StorePendingAuthorization(ctx context.Context, state string, pending *authserver.PendingAuthorization) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "StorePendingAuthorization", ctx, state, pending)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// StorePendingAuthorization indicates an expected call of StorePendingAuthorization.
+func (mr *MockStorageMockRecorder) StorePendingAuthorization(ctx, state, pending any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StorePendingAuthorization", reflect.TypeOf((*MockStorage)(nil).StorePendingAuthorization), ctx, state, pending)
 }
 
 // MockIDPTokenStorage is a mock of IDPTokenStorage interface.

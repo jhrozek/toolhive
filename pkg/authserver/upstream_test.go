@@ -40,7 +40,7 @@ func newMockOIDCServer() *mockOIDCServer {
 		TokenEndpoint:                 mock.issuer + "/token",
 		UserInfoEndpoint:              mock.issuer + "/userinfo",
 		JWKSEndpoint:                  mock.issuer + "/.well-known/jwks.json",
-		CodeChallengeMethodsSupported: []string{"S256"},
+		CodeChallengeMethodsSupported: []string{PKCEChallengeMethodS256},
 	}
 
 	return mock
@@ -328,8 +328,8 @@ func TestOIDCUpstreamProvider_AuthorizationURL(t *testing.T) {
 			t.Errorf("expected code_challenge=test-challenge, got %q", query.Get("code_challenge"))
 		}
 
-		if query.Get("code_challenge_method") != "S256" {
-			t.Errorf("expected code_challenge_method=S256, got %q", query.Get("code_challenge_method"))
+		if query.Get("code_challenge_method") != PKCEChallengeMethodS256 {
+			t.Errorf("expected code_challenge_method=%s, got %q", PKCEChallengeMethodS256, query.Get("code_challenge_method"))
 		}
 	})
 
