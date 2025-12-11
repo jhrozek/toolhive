@@ -723,3 +723,809 @@ var _ oauth2.JWTSessionContainer = (*Session)(nil)
 var _ interface {
 	GetJWTClaims() fositeJWT.JWTClaimsContainer
 } = (*Session)(nil)
+
+// ============================================================================
+// Full PKCE Flow Integration Tests with Mock Upstream IDP
+// ============================================================================
+
+// mockUpstreamIDP is a test server that simulates an upstream Identity Provider.
+// It serves OIDC discovery, token, and userinfo endpoints.
+type mockUpstreamIDP struct {
+	server *httptest.Server
+
+	// tokens to return on exchange
+	tokens *IDPTokens
+
+	// userInfo to return on userinfo request
+	userInfo *UserInfo
+
+	// tokenError when set, the token endpoint returns this error
+	tokenError string
+
+	// tokenErrorDescription when set, provides additional error context
+	tokenErrorDescription string
+}
+
+// mockIDPOption configures a mockUpstreamIDP.
+type mockIDPOption func(*mockUpstreamIDP)
+
+// withIDPTokenError configures the mock IDP to return an error on token exchange.
+func withIDPTokenError(err, description string) mockIDPOption {
+	return func(m *mockUpstreamIDP) {
+		m.tokenError = err
+		m.tokenErrorDescription = description
+	}
+}
+
+// startMockUpstreamIDP creates and starts a mock upstream IDP server.
+func startMockUpstreamIDP(t *testing.T, opts ...mockIDPOption) *mockUpstreamIDP {
+	t.Helper()
+
+	mock := &mockUpstreamIDP{
+		tokens: &IDPTokens{
+			AccessToken:  "mock-idp-access-token-" + generateRandomID(t),
+			RefreshToken: "mock-idp-refresh-token-" + generateRandomID(t),
+			IDToken:      "mock-idp-id-token-" + generateRandomID(t),
+			ExpiresAt:    time.Now().Add(time.Hour),
+		},
+		userInfo: &UserInfo{
+			Subject: "mock-user-sub-123",
+			Email:   "testuser@example.com",
+			Name:    "Test User",
+			Claims: map[string]any{
+				"sub":   "mock-user-sub-123",
+				"email": "testuser@example.com",
+				"name":  "Test User",
+			},
+		},
+	}
+
+	for _, opt := range opts {
+		opt(mock)
+	}
+
+	mux := http.NewServeMux()
+
+	// The server URL isn't known until after httptest.NewServer, so we use a closure
+	var serverURL string
+
+	// Discovery endpoint
+	mux.HandleFunc("GET /.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		discovery := map[string]interface{}{
+			"issuer":                                serverURL,
+			"authorization_endpoint":                serverURL + "/auth",
+			"token_endpoint":                        serverURL + "/token",
+			"userinfo_endpoint":                     serverURL + "/userinfo",
+			"jwks_uri":                              serverURL + "/jwks",
+			"code_challenge_methods_supported":      []string{"S256", "plain"},
+			"response_types_supported":              []string{"code"},
+			"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
+			"subject_types_supported":               []string{"public"},
+			"id_token_signing_alg_values_supported": []string{"RS256"},
+			"scopes_supported":                      []string{"openid", "profile", "email"},
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(discovery); err != nil {
+			http.Error(w, "failed to encode discovery", http.StatusInternalServerError)
+		}
+	})
+
+	// Token endpoint
+	mux.HandleFunc("POST /token", func(w http.ResponseWriter, r *http.Request) {
+		// Parse form
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "failed to parse form", http.StatusBadRequest)
+			return
+		}
+
+		// If token error is configured, return it
+		if mock.tokenError != "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			errResp := map[string]string{
+				"error":             mock.tokenError,
+				"error_description": mock.tokenErrorDescription,
+			}
+			_ = json.NewEncoder(w).Encode(errResp)
+			return
+		}
+
+		// Validate grant type
+		grantType := r.FormValue("grant_type")
+		if grantType != "authorization_code" && grantType != "refresh_token" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"error":             "unsupported_grant_type",
+				"error_description": "only authorization_code and refresh_token are supported",
+			})
+			return
+		}
+
+		// Return mock tokens
+		tokenResponse := map[string]interface{}{
+			"access_token":  mock.tokens.AccessToken,
+			"token_type":    "Bearer",
+			"expires_in":    3600,
+			"refresh_token": mock.tokens.RefreshToken,
+			"id_token":      mock.tokens.IDToken,
+			"scope":         "openid profile email",
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(tokenResponse); err != nil {
+			http.Error(w, "failed to encode token response", http.StatusInternalServerError)
+		}
+	})
+
+	// UserInfo endpoint
+	mux.HandleFunc("GET /userinfo", func(w http.ResponseWriter, r *http.Request) {
+		// Verify authorization header
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+			http.Error(w, "missing or invalid authorization header", http.StatusUnauthorized)
+			return
+		}
+
+		// Return mock user info
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(mock.userInfo.Claims); err != nil {
+			http.Error(w, "failed to encode userinfo", http.StatusInternalServerError)
+		}
+	})
+
+	// JWKS endpoint (empty for mock - we don't validate IDP tokens)
+	mux.HandleFunc("GET /jwks", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"keys":[]}`))
+	})
+
+	mock.server = httptest.NewServer(mux)
+	serverURL = mock.server.URL
+
+	t.Cleanup(func() {
+		mock.server.Close()
+	})
+
+	return mock
+}
+
+// URL returns the base URL of the mock IDP server.
+func (m *mockUpstreamIDP) URL() string {
+	return m.server.URL
+}
+
+// testServerWithUpstream bundles test server components with upstream IDP.
+type testServerWithUpstream struct {
+	*testServer
+	mockIDP  *mockUpstreamIDP
+	upstream *OIDCUpstreamProvider
+}
+
+// setupTestServerWithUpstream creates a test server with a configured upstream IDP.
+func setupTestServerWithUpstream(t *testing.T, mockIDP *mockUpstreamIDP) *testServerWithUpstream {
+	t.Helper()
+
+	// 1. Generate RSA key for signing
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	// 2. Generate HMAC secret
+	secret := make([]byte, 32)
+	_, err = rand.Read(secret)
+	require.NoError(t, err)
+
+	// 3. Create config with upstream
+	config := &Config{
+		Issuer:               testIssuer,
+		AccessTokenLifespan:  time.Hour,
+		RefreshTokenLifespan: 24 * time.Hour,
+		AuthCodeLifespan:     10 * time.Minute,
+		Secret:               secret,
+		PrivateKeys: []PrivateKey{{
+			KeyID:     "test-key",
+			Algorithm: "RS256",
+			Key:       privateKey,
+		}},
+		Upstream: UpstreamConfig{
+			Issuer:       mockIDP.URL(),
+			ClientID:     "auth-server-client",
+			ClientSecret: "auth-server-secret",
+			Scopes:       []string{"openid", "profile", "email"},
+			RedirectURI:  testIssuer + "/oauth/callback",
+		},
+	}
+
+	// 4. Create OAuth2Config
+	oauth2Config, err := NewOAuth2Config(config)
+	require.NoError(t, err)
+
+	// 5. Create storage
+	storage := NewMemoryStorage()
+
+	// 6. Register test client (public client for PKCE)
+	storage.RegisterClient(&fosite.DefaultClient{
+		ID:            testClientID,
+		Secret:        nil, // public client
+		RedirectURIs:  []string{testRedirectURI},
+		ResponseTypes: []string{"code"},
+		GrantTypes:    []string{"authorization_code", "refresh_token"},
+		Scopes:        []string{"openid", "profile", "email"},
+		Public:        true,
+	})
+
+	// 7. Create fosite provider using compose.Compose()
+	jwtStrategy := compose.NewOAuth2JWTStrategy(
+		func(_ context.Context) (interface{}, error) {
+			return privateKey, nil
+		},
+		compose.NewOAuth2HMACStrategy(oauth2Config.Config),
+		oauth2Config.Config,
+	)
+
+	provider := compose.Compose(
+		oauth2Config.Config,
+		storage,
+		&compose.CommonStrategy{CoreStrategy: jwtStrategy},
+		compose.OAuth2AuthorizeExplicitFactory,
+		compose.OAuth2RefreshTokenGrantFactory,
+		compose.OAuth2PKCEFactory,
+	)
+
+	// 8. Create upstream provider
+	ctx := context.Background()
+	upstream, err := NewOIDCUpstreamProvider(ctx, config.Upstream)
+	require.NoError(t, err)
+
+	// 9. Create router with upstream and HTTP server
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	router := NewRouter(logger, provider, oauth2Config, storage, WithUpstreamProvider(upstream))
+	mux := http.NewServeMux()
+	router.Routes(mux)
+	server := httptest.NewServer(mux)
+
+	t.Cleanup(func() {
+		server.Close()
+		storage.Close()
+	})
+
+	return &testServerWithUpstream{
+		testServer: &testServer{
+			Server:       server,
+			Storage:      storage,
+			OAuth2Config: oauth2Config,
+			PrivateKey:   privateKey,
+			Strategy:     jwtStrategy,
+		},
+		mockIDP:  mockIDP,
+		upstream: upstream,
+	}
+}
+
+// noRedirectClient returns an HTTP client that does not follow redirects.
+func noRedirectClient() *http.Client {
+	return &http.Client{
+		Timeout: 10 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+// TestIntegration_FullPKCEFlow tests the complete OAuth flow:
+// Client -> Auth Server -> Upstream IDP -> Auth Server -> Client -> Token Exchange
+func TestIntegration_FullPKCEFlow(t *testing.T) {
+	t.Parallel()
+
+	// 1. Start mock upstream IDP server
+	mockIDP := startMockUpstreamIDP(t)
+
+	// 2. Create auth server with upstream pointing to mock IDP
+	ts := setupTestServerWithUpstream(t, mockIDP)
+
+	// 3. Generate PKCE verifier and challenge
+	verifier, challenge := generatePKCE(t)
+
+	// 4. Client initiates auth: GET /oauth/authorize
+	authorizeURL := ts.Server.URL + "/oauth/authorize?" + url.Values{
+		"client_id":             {testClientID},
+		"redirect_uri":          {testRedirectURI},
+		"state":                 {"client-state-123"},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"response_type":         {"code"},
+		"scope":                 {"openid profile"},
+	}.Encode()
+
+	client := noRedirectClient()
+
+	// 5. Auth server should redirect to mock IDP
+	resp, err := client.Get(authorizeURL)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusFound, resp.StatusCode, "expected redirect to upstream IDP")
+
+	idpRedirect, err := resp.Location()
+	require.NoError(t, err)
+	assert.Contains(t, idpRedirect.String(), mockIDP.URL(), "redirect should point to mock IDP")
+
+	// Extract internal state from redirect
+	internalState := idpRedirect.Query().Get("state")
+	require.NotEmpty(t, internalState, "internal state should be present in redirect")
+
+	// 6. Simulate IDP completing auth and calling back
+	// Mock IDP would normally redirect to our callback with code + state
+	callbackURL := ts.Server.URL + "/oauth/callback?" + url.Values{
+		"code":  {"mock-idp-auth-code"},
+		"state": {internalState},
+	}.Encode()
+
+	resp, err = client.Get(callbackURL)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusFound, resp.StatusCode, "callback should redirect to client")
+
+	// 7. Auth server should redirect to client with our code
+	clientRedirect, err := resp.Location()
+	require.NoError(t, err)
+
+	assert.Contains(t, clientRedirect.String(), "localhost:8080/callback", "should redirect to client callback")
+	assert.Equal(t, "client-state-123", clientRedirect.Query().Get("state"), "client state should be preserved")
+
+	ourCode := clientRedirect.Query().Get("code")
+	require.NotEmpty(t, ourCode, "authorization code should be present")
+
+	// 8. Client exchanges code for token: POST /oauth/token
+	tokenResp := makeTokenRequest(t, ts.Server.URL, url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {ourCode},
+		"redirect_uri":  {testRedirectURI},
+		"client_id":     {testClientID},
+		"code_verifier": {verifier},
+	})
+	defer tokenResp.Body.Close()
+
+	tokenData := parseTokenResponse(t, tokenResp)
+
+	if tokenResp.StatusCode != http.StatusOK {
+		t.Logf("Token response error: %v", tokenData)
+	}
+	require.Equal(t, http.StatusOK, tokenResp.StatusCode, "token request should succeed")
+
+	// 9. Verify we got a JWT
+	accessToken, ok := tokenData["access_token"].(string)
+	assert.True(t, ok, "access_token should be a string")
+	assert.NotEmpty(t, accessToken, "access_token should not be empty")
+
+	tokenType, ok := tokenData["token_type"].(string)
+	assert.True(t, ok, "token_type should be a string")
+	assert.Equal(t, "bearer", strings.ToLower(tokenType), "token type should be Bearer")
+
+	// 10. Verify the JWT can be validated
+	parsedToken, err := jwt.ParseSigned(accessToken, []jose.SignatureAlgorithm{jose.RS256})
+	require.NoError(t, err, "should be able to parse JWT")
+
+	var claims map[string]interface{}
+	err = parsedToken.Claims(ts.PrivateKey.Public(), &claims)
+	require.NoError(t, err, "JWT signature should be valid")
+
+	// Verify claims
+	assert.Equal(t, ts.OAuth2Config.AccessTokenIssuer, claims["iss"], "issuer should match")
+}
+
+// TestIntegration_FullPKCEFlow_UpstreamError tests error handling when upstream IDP returns an error.
+func TestIntegration_FullPKCEFlow_UpstreamError(t *testing.T) {
+	t.Parallel()
+
+	// 1. Start mock upstream IDP server
+	mockIDP := startMockUpstreamIDP(t, withIDPTokenError("access_denied", "user denied access"))
+
+	// 2. Create auth server with upstream pointing to mock IDP
+	ts := setupTestServerWithUpstream(t, mockIDP)
+
+	// 3. Generate PKCE verifier and challenge
+	_, challenge := generatePKCE(t)
+
+	// 4. Client initiates auth: GET /oauth/authorize
+	authorizeURL := ts.Server.URL + "/oauth/authorize?" + url.Values{
+		"client_id":             {testClientID},
+		"redirect_uri":          {testRedirectURI},
+		"state":                 {"client-state-456"},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"response_type":         {"code"},
+		"scope":                 {"openid profile"},
+	}.Encode()
+
+	client := noRedirectClient()
+
+	// 5. Auth server should redirect to mock IDP
+	resp, err := client.Get(authorizeURL)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusFound, resp.StatusCode)
+
+	idpRedirect, err := resp.Location()
+	require.NoError(t, err)
+
+	// Extract internal state from redirect
+	internalState := idpRedirect.Query().Get("state")
+	require.NotEmpty(t, internalState)
+
+	// 6. Simulate IDP callback (token exchange will fail)
+	callbackURL := ts.Server.URL + "/oauth/callback?" + url.Values{
+		"code":  {"mock-idp-auth-code"},
+		"state": {internalState},
+	}.Encode()
+
+	resp, err = client.Get(callbackURL)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	// 7. Auth server should redirect to client with error
+	require.Equal(t, http.StatusFound, resp.StatusCode, "should redirect even on error")
+
+	clientRedirect, err := resp.Location()
+	require.NoError(t, err)
+
+	// The error should be propagated to the client
+	errorParam := clientRedirect.Query().Get("error")
+	assert.NotEmpty(t, errorParam, "error should be present in redirect")
+	assert.Equal(t, "client-state-456", clientRedirect.Query().Get("state"), "client state should be preserved")
+}
+
+// TestIntegration_FullPKCEFlow_InvalidState tests error handling when callback has invalid state.
+func TestIntegration_FullPKCEFlow_InvalidState(t *testing.T) {
+	t.Parallel()
+
+	// 1. Start mock upstream IDP server
+	mockIDP := startMockUpstreamIDP(t)
+
+	// 2. Create auth server with upstream pointing to mock IDP
+	ts := setupTestServerWithUpstream(t, mockIDP)
+
+	client := noRedirectClient()
+
+	// 3. Simulate callback with invalid state (no pending authorization)
+	callbackURL := ts.Server.URL + "/oauth/callback?" + url.Values{
+		"code":  {"mock-idp-auth-code"},
+		"state": {"invalid-state-that-doesnt-exist"},
+	}.Encode()
+
+	resp, err := client.Get(callbackURL)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	// Should return error (not a redirect since we can't look up the client's redirect_uri)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "should return error for invalid state")
+}
+
+// TestIntegration_FullPKCEFlow_MissingState tests error handling when callback is missing state.
+func TestIntegration_FullPKCEFlow_MissingState(t *testing.T) {
+	t.Parallel()
+
+	// 1. Start mock upstream IDP server
+	mockIDP := startMockUpstreamIDP(t)
+
+	// 2. Create auth server with upstream pointing to mock IDP
+	ts := setupTestServerWithUpstream(t, mockIDP)
+
+	client := noRedirectClient()
+
+	// 3. Simulate callback without state parameter
+	callbackURL := ts.Server.URL + "/oauth/callback?" + url.Values{
+		"code": {"mock-idp-auth-code"},
+		// state intentionally omitted
+	}.Encode()
+
+	resp, err := client.Get(callbackURL)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	// Should return error
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "should return error for missing state")
+}
+
+// TestIntegration_FullPKCEFlow_MissingCode tests error handling when callback is missing code.
+func TestIntegration_FullPKCEFlow_MissingCode(t *testing.T) {
+	t.Parallel()
+
+	// 1. Start mock upstream IDP server
+	mockIDP := startMockUpstreamIDP(t)
+
+	// 2. Create auth server with upstream pointing to mock IDP
+	ts := setupTestServerWithUpstream(t, mockIDP)
+
+	// 3. Generate PKCE challenge
+	_, challenge := generatePKCE(t)
+
+	// 4. Client initiates auth
+	authorizeURL := ts.Server.URL + "/oauth/authorize?" + url.Values{
+		"client_id":             {testClientID},
+		"redirect_uri":          {testRedirectURI},
+		"state":                 {"client-state-789"},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"response_type":         {"code"},
+		"scope":                 {"openid profile"},
+	}.Encode()
+
+	client := noRedirectClient()
+
+	// 5. Auth server redirects to mock IDP
+	resp, err := client.Get(authorizeURL)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusFound, resp.StatusCode)
+
+	idpRedirect, err := resp.Location()
+	require.NoError(t, err)
+
+	internalState := idpRedirect.Query().Get("state")
+	require.NotEmpty(t, internalState)
+
+	// 6. Simulate callback without code parameter
+	callbackURL := ts.Server.URL + "/oauth/callback?" + url.Values{
+		"state": {internalState},
+		// code intentionally omitted
+	}.Encode()
+
+	resp, err = client.Get(callbackURL)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	// Should return error
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "should return error for missing code")
+}
+
+// TestIntegration_FullPKCEFlow_UpstreamErrorCallback tests handling of upstream IDP errors in callback.
+func TestIntegration_FullPKCEFlow_UpstreamErrorCallback(t *testing.T) {
+	t.Parallel()
+
+	// 1. Start mock upstream IDP server
+	mockIDP := startMockUpstreamIDP(t)
+
+	// 2. Create auth server with upstream pointing to mock IDP
+	ts := setupTestServerWithUpstream(t, mockIDP)
+
+	// 3. Generate PKCE challenge
+	_, challenge := generatePKCE(t)
+
+	// 4. Client initiates auth
+	authorizeURL := ts.Server.URL + "/oauth/authorize?" + url.Values{
+		"client_id":             {testClientID},
+		"redirect_uri":          {testRedirectURI},
+		"state":                 {"client-state-error"},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"response_type":         {"code"},
+		"scope":                 {"openid profile"},
+	}.Encode()
+
+	client := noRedirectClient()
+
+	// 5. Auth server redirects to mock IDP
+	resp, err := client.Get(authorizeURL)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusFound, resp.StatusCode)
+
+	idpRedirect, err := resp.Location()
+	require.NoError(t, err)
+
+	internalState := idpRedirect.Query().Get("state")
+	require.NotEmpty(t, internalState)
+
+	// 6. Simulate IDP returning an error in the callback
+	callbackURL := ts.Server.URL + "/oauth/callback?" + url.Values{
+		"state":             {internalState},
+		"error":             {"access_denied"},
+		"error_description": {"User denied the authorization request"},
+	}.Encode()
+
+	resp, err = client.Get(callbackURL)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	// Should redirect to client with error
+	require.Equal(t, http.StatusFound, resp.StatusCode, "should redirect with error")
+
+	clientRedirect, err := resp.Location()
+	require.NoError(t, err)
+
+	assert.Equal(t, "access_denied", clientRedirect.Query().Get("error"), "error should be propagated")
+	assert.Equal(t, "client-state-error", clientRedirect.Query().Get("state"), "client state should be preserved")
+}
+
+// TestIntegration_FullPKCEFlow_NoUpstreamProvider tests error when upstream provider is not configured.
+func TestIntegration_FullPKCEFlow_NoUpstreamProvider(t *testing.T) {
+	t.Parallel()
+
+	// Use the regular test setup (no upstream configured)
+	ts := integrationTestSetup(t)
+
+	// Generate PKCE challenge
+	_, challenge := generatePKCE(t)
+
+	// Try to initiate auth without upstream configured
+	authorizeURL := ts.Server.URL + "/oauth/authorize?" + url.Values{
+		"client_id":             {testClientID},
+		"redirect_uri":          {testRedirectURI},
+		"state":                 {"client-state-no-upstream"},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"response_type":         {"code"},
+		"scope":                 {"openid profile"},
+	}.Encode()
+
+	client := noRedirectClient()
+
+	resp, err := client.Get(authorizeURL)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	// Should redirect to client with error since upstream is not configured
+	require.Equal(t, http.StatusFound, resp.StatusCode, "should redirect with error")
+
+	clientRedirect, err := resp.Location()
+	require.NoError(t, err)
+
+	errorParam := clientRedirect.Query().Get("error")
+	assert.NotEmpty(t, errorParam, "error should be present")
+	assert.Equal(t, "client-state-no-upstream", clientRedirect.Query().Get("state"), "client state should be preserved")
+}
+
+// TestIntegration_FullPKCEFlow_InvalidPKCEVerifier tests that invalid PKCE verifier fails at token exchange.
+func TestIntegration_FullPKCEFlow_InvalidPKCEVerifier(t *testing.T) {
+	t.Parallel()
+
+	// 1. Start mock upstream IDP server
+	mockIDP := startMockUpstreamIDP(t)
+
+	// 2. Create auth server with upstream pointing to mock IDP
+	ts := setupTestServerWithUpstream(t, mockIDP)
+
+	// 3. Generate PKCE verifier and challenge
+	_, challenge := generatePKCE(t)
+
+	// 4. Client initiates auth
+	authorizeURL := ts.Server.URL + "/oauth/authorize?" + url.Values{
+		"client_id":             {testClientID},
+		"redirect_uri":          {testRedirectURI},
+		"state":                 {"client-state-pkce"},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"response_type":         {"code"},
+		"scope":                 {"openid profile"},
+	}.Encode()
+
+	client := noRedirectClient()
+
+	// 5. Auth server redirects to mock IDP
+	resp, err := client.Get(authorizeURL)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusFound, resp.StatusCode)
+
+	idpRedirect, err := resp.Location()
+	require.NoError(t, err)
+
+	internalState := idpRedirect.Query().Get("state")
+	require.NotEmpty(t, internalState)
+
+	// 6. Simulate IDP callback
+	callbackURL := ts.Server.URL + "/oauth/callback?" + url.Values{
+		"code":  {"mock-idp-auth-code"},
+		"state": {internalState},
+	}.Encode()
+
+	resp, err = client.Get(callbackURL)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusFound, resp.StatusCode)
+
+	clientRedirect, err := resp.Location()
+	require.NoError(t, err)
+
+	ourCode := clientRedirect.Query().Get("code")
+	require.NotEmpty(t, ourCode)
+
+	// 7. Try to exchange code with WRONG verifier
+	tokenResp := makeTokenRequest(t, ts.Server.URL, url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {ourCode},
+		"redirect_uri":  {testRedirectURI},
+		"client_id":     {testClientID},
+		"code_verifier": {"wrong-verifier-that-wont-match-the-challenge"},
+	})
+	defer tokenResp.Body.Close()
+
+	// Should fail due to PKCE mismatch
+	assert.GreaterOrEqual(t, tokenResp.StatusCode, 400, "should fail with invalid PKCE verifier")
+
+	tokenData := parseTokenResponse(t, tokenResp)
+	errorField, ok := tokenData["error"].(string)
+	assert.True(t, ok, "error should be present")
+	assert.NotEmpty(t, errorField, "error should not be empty")
+}
+
+// TestIntegration_FullPKCEFlow_VerifyIDPTokensStored tests that IDP tokens are stored after successful auth.
+func TestIntegration_FullPKCEFlow_VerifyIDPTokensStored(t *testing.T) {
+	t.Parallel()
+
+	// 1. Start mock upstream IDP server
+	mockIDP := startMockUpstreamIDP(t)
+
+	// 2. Create auth server with upstream pointing to mock IDP
+	ts := setupTestServerWithUpstream(t, mockIDP)
+
+	// 3. Generate PKCE verifier and challenge
+	verifier, challenge := generatePKCE(t)
+
+	// 4. Get initial IDP tokens count
+	initialStats := ts.Storage.Stats()
+
+	// 5. Complete full flow
+	authorizeURL := ts.Server.URL + "/oauth/authorize?" + url.Values{
+		"client_id":             {testClientID},
+		"redirect_uri":          {testRedirectURI},
+		"state":                 {"client-state-tokens"},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"response_type":         {"code"},
+		"scope":                 {"openid profile"},
+	}.Encode()
+
+	client := noRedirectClient()
+
+	resp, err := client.Get(authorizeURL)
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	require.Equal(t, http.StatusFound, resp.StatusCode)
+
+	idpRedirect, err := resp.Location()
+	require.NoError(t, err)
+
+	internalState := idpRedirect.Query().Get("state")
+
+	callbackURL := ts.Server.URL + "/oauth/callback?" + url.Values{
+		"code":  {"mock-idp-auth-code"},
+		"state": {internalState},
+	}.Encode()
+
+	resp, err = client.Get(callbackURL)
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	require.Equal(t, http.StatusFound, resp.StatusCode)
+
+	clientRedirect, err := resp.Location()
+	require.NoError(t, err)
+
+	ourCode := clientRedirect.Query().Get("code")
+
+	// Exchange for tokens
+	tokenResp := makeTokenRequest(t, ts.Server.URL, url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {ourCode},
+		"redirect_uri":  {testRedirectURI},
+		"client_id":     {testClientID},
+		"code_verifier": {verifier},
+	})
+	tokenResp.Body.Close()
+
+	require.Equal(t, http.StatusOK, tokenResp.StatusCode)
+
+	// 6. Verify IDP tokens were stored
+	finalStats := ts.Storage.Stats()
+	assert.Greater(t, finalStats.IDPTokens, initialStats.IDPTokens, "IDP tokens should be stored after successful auth")
+}
