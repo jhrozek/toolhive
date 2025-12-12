@@ -942,6 +942,12 @@ func createAuthServerMux(
 		return nil, nil, nil
 	}
 
+	// Validate that issuer can be determined when using auto-assigned ports
+	if runFlags.AuthServerIssuer == "" && proxyPort == 0 {
+		return nil, nil, fmt.Errorf(
+			"--auth-server-issuer is required when using auto-assigned ports (--proxy-port not set)")
+	}
+
 	// Default issuer URL if not provided
 	issuer := runFlags.AuthServerIssuer
 	if issuer == "" {
