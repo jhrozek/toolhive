@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
@@ -129,6 +130,13 @@ type RunConfig struct {
 
 	// Deployer is the container runtime to use (not serialized)
 	Deployer rt.Deployer `json:"-" yaml:"-"`
+
+	// AuthServerMux is an optional HTTP handler for the embedded OAuth authorization server (not serialized)
+	AuthServerMux http.Handler `json:"-" yaml:"-"`
+
+	// AuthServerWellKnownMux is an optional HTTP handler for the embedded OAuth authorization server's
+	// well-known endpoints (not serialized)
+	AuthServerWellKnownMux http.Handler `json:"-" yaml:"-"`
 
 	// buildContext indicates whether this config is being built for CLI or operator use (not serialized)
 	buildContext BuildContext

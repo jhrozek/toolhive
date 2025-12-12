@@ -159,6 +159,8 @@ func (r *Runner) Run(ctx context.Context) error {
 	transportConfig.Middlewares = r.namedMiddlewares
 	transportConfig.AuthInfoHandler = r.authInfoHandler
 	transportConfig.PrometheusHandler = r.prometheusHandler
+	transportConfig.AuthServerMux = r.Config.AuthServerMux
+	transportConfig.AuthServerWellKnownMux = r.Config.AuthServerWellKnownMux
 
 	// Set proxy mode for stdio transport
 	transportConfig.ProxyMode = r.Config.ProxyMode

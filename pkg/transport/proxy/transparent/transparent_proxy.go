@@ -66,6 +66,12 @@ type TransparentProxy struct {
 	// Optional auth info handler
 	authInfoHandler http.Handler
 
+	// Optional embedded OAuth authorization server handler
+	authServerMux http.Handler
+
+	// Optional embedded OAuth authorization server well-known endpoints handler
+	authServerWellKnownMux http.Handler
+
 	// Sessions for tracking state
 	sessionManager *session.Manager
 
@@ -89,22 +95,26 @@ func NewTransparentProxy(
 	targetURI string,
 	prometheusHandler http.Handler,
 	authInfoHandler http.Handler,
+	authServerMux http.Handler,
+	authServerWellKnownMux http.Handler,
 	enableHealthCheck bool,
 	isRemote bool,
 	transportType string,
 	middlewares ...types.NamedMiddleware,
 ) *TransparentProxy {
 	proxy := &TransparentProxy{
-		host:              host,
-		port:              port,
-		targetURI:         targetURI,
-		middlewares:       middlewares,
-		shutdownCh:        make(chan struct{}),
-		prometheusHandler: prometheusHandler,
-		authInfoHandler:   authInfoHandler,
-		sessionManager:    session.NewManager(session.DefaultSessionTTL, session.NewProxySession),
-		isRemote:          isRemote,
-		transportType:     transportType,
+		host:                   host,
+		port:                   port,
+		targetURI:              targetURI,
+		middlewares:            middlewares,
+		shutdownCh:             make(chan struct{}),
+		prometheusHandler:      prometheusHandler,
+		authInfoHandler:        authInfoHandler,
+		authServerMux:          authServerMux,
+		authServerWellKnownMux: authServerWellKnownMux,
+		sessionManager:         session.NewManager(session.DefaultSessionTTL, session.NewProxySession),
+		isRemote:               isRemote,
+		transportType:          transportType,
 	}
 
 	// Create health checker always for Kubernetes probes
@@ -354,11 +364,22 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		logger.Info("Prometheus metrics endpoint enabled at /metrics")
 	}
 
-	// Add .well-known discovery endpoints if auth info handler is provided (no middlewares, RFC 9728 compliant)
-	// Handles /.well-known/oauth-protected-resource and subpaths (e.g., /mcp)
-	if wellKnownHandler := auth.NewWellKnownHandler(p.authInfoHandler); wellKnownHandler != nil {
+	// Add .well-known discovery endpoints (no middlewares)
+	// If authServerWellKnownMux is provided (from embedded auth server), it takes precedence
+	// over the default well-known handler (authInfoHandler).
+	if p.authServerWellKnownMux != nil {
+		mux.Handle("/.well-known/", p.authServerWellKnownMux)
+		logger.Info("Embedded OAuth authorization server well-known endpoints enabled at /.well-known/")
+	} else if wellKnownHandler := auth.NewWellKnownHandler(p.authInfoHandler); wellKnownHandler != nil {
+		// Fallback to RFC 9728 OAuth discovery endpoints from authInfoHandler
 		mux.Handle("/.well-known/", wellKnownHandler)
 		logger.Info("RFC 9728 OAuth discovery endpoints enabled at /.well-known/ (no middlewares)")
+	}
+
+	// Add embedded OAuth authorization server endpoints if provided (no middlewares)
+	if p.authServerMux != nil {
+		mux.Handle("/oauth/", p.authServerMux)
+		logger.Info("Embedded OAuth authorization server enabled at /oauth/")
 	}
 
 	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", p.host, p.port))

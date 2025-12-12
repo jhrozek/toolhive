@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"slices"
 	"strings"
@@ -57,6 +58,26 @@ func WithRuntime(deployer rt.Deployer) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		if b.buildContext == BuildContextCLI {
 			b.config.Deployer = deployer
+		}
+		return nil
+	}
+}
+
+// WithAuthServerMux sets the embedded OAuth authorization server handler
+func WithAuthServerMux(mux http.Handler) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		if b.buildContext == BuildContextCLI {
+			b.config.AuthServerMux = mux
+		}
+		return nil
+	}
+}
+
+// WithAuthServerWellKnownMux sets the embedded OAuth authorization server's well-known endpoints handler
+func WithAuthServerWellKnownMux(mux http.Handler) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		if b.buildContext == BuildContextCLI {
+			b.config.AuthServerWellKnownMux = mux
 		}
 		return nil
 	}
