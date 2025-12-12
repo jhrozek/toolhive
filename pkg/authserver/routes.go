@@ -53,7 +53,14 @@ func NewRouter(
 }
 
 // Routes registers the OAuth/OIDC endpoints on the provided mux.
+// This method calls both OAuthRoutes and WellKnownRoutes for backward compatibility.
 func (r *Router) Routes(mux *http.ServeMux) {
+	r.OAuthRoutes(mux)
+	r.WellKnownRoutes(mux)
+}
+
+// OAuthRoutes registers only the OAuth endpoints (authorize, callback, token) on the provided mux.
+func (r *Router) OAuthRoutes(mux *http.ServeMux) {
 	// Authorization endpoint (initiates OAuth flow)
 	mux.HandleFunc("GET /oauth/authorize", r.AuthorizeHandler)
 
@@ -62,7 +69,10 @@ func (r *Router) Routes(mux *http.ServeMux) {
 
 	// Token endpoint
 	mux.HandleFunc("POST /oauth/token", r.TokenHandler)
+}
 
+// WellKnownRoutes registers only the well-known endpoints (JWKS, OIDC discovery) on the provided mux.
+func (r *Router) WellKnownRoutes(mux *http.ServeMux) {
 	// JWKS endpoint
 	mux.HandleFunc("GET /.well-known/jwks.json", r.JWKSHandler)
 
