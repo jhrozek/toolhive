@@ -15,6 +15,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
+	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	ct "github.com/stacklok/toolhive/pkg/container"
@@ -159,8 +160,21 @@ func (r *Runner) Run(ctx context.Context) error {
 	transportConfig.Middlewares = r.namedMiddlewares
 	transportConfig.AuthInfoHandler = r.authInfoHandler
 	transportConfig.PrometheusHandler = r.prometheusHandler
-	transportConfig.AuthServerMux = r.Config.AuthServerMux
-	transportConfig.AuthServerWellKnownMux = r.Config.AuthServerWellKnownMux
+
+	// Create auth server handlers if configured via AuthServerConfig
+	// This takes precedence over the pre-created AuthServerMux/AuthServerWellKnownMux handlers
+	if r.Config.AuthServerConfig != nil && r.Config.AuthServerConfig.Enabled {
+		oauthMux, wellKnownMux, err := authserver.CreateHandlers(ctx, r.Config.AuthServerConfig, r.Config.Port)
+		if err != nil {
+			return fmt.Errorf("failed to create auth server handlers: %w", err)
+		}
+		transportConfig.AuthServerMux = oauthMux
+		transportConfig.AuthServerWellKnownMux = wellKnownMux
+	} else {
+		// Fall back to pre-created handlers for backward compatibility
+		transportConfig.AuthServerMux = r.Config.AuthServerMux
+		transportConfig.AuthServerWellKnownMux = r.Config.AuthServerWellKnownMux
+	}
 
 	// Set proxy mode for stdio transport
 	transportConfig.ProxyMode = r.Config.ProxyMode
