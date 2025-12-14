@@ -2,18 +2,9 @@ package app
 
 import (
 	"context"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/pem"
 	"fmt"
-	"log/slog"
-	"net/http"
-	"os"
 	"strings"
-	"time"
 
-	"github.com/ory/fosite"
-	"github.com/ory/fosite/compose"
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/auth"
@@ -130,13 +121,14 @@ type RunFlags struct {
 	OAuthParams     map[string]string
 
 	// Auth Server (embedded OAuth authorization server for testing)
-	AuthServer                     bool
-	AuthServerIssuer               string
-	AuthServerSigningKey           string
-	AuthServerUpstreamIssuer       string
-	AuthServerUpstreamClientID     string
-	AuthServerUpstreamClientSecret string
-	AuthServerUpstreamScopes       []string
+	AuthServer                         bool
+	AuthServerIssuer                   string
+	AuthServerSigningKey               string
+	AuthServerUpstreamIssuer           string
+	AuthServerUpstreamClientID         string
+	AuthServerUpstreamClientSecret     string
+	AuthServerUpstreamClientSecretFile string
+	AuthServerUpstreamScopes           []string
 }
 
 // AddRunFlags adds all the run flags to a command
@@ -272,6 +264,8 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"Upstream IDP client ID")
 	cmd.Flags().StringVar(&config.AuthServerUpstreamClientSecret, "auth-server-upstream-client-secret", "",
 		"Upstream IDP client secret")
+	cmd.Flags().StringVar(&config.AuthServerUpstreamClientSecretFile, "auth-server-upstream-client-secret-file", "",
+		"Path to file containing the upstream OAuth client secret")
 	cmd.Flags().StringSliceVar(&config.AuthServerUpstreamScopes, "auth-server-upstream-scopes",
 		[]string{"openid", "email"},
 		"Scopes to request from upstream IDP")
@@ -507,16 +501,13 @@ func buildRunnerConfig(
 		toolsOverride = *loadedToolsOverride
 	}
 
-	// Create embedded auth server if enabled
-	authServerOAuthMux, authServerWellKnownMux, err := createAuthServerMux(ctx, runFlags, runFlags.ProxyPort)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create auth server: %w", err)
-	}
-	if authServerOAuthMux != nil {
-		opts = append(opts, runner.WithAuthServerMux(authServerOAuthMux))
-	}
-	if authServerWellKnownMux != nil {
-		opts = append(opts, runner.WithAuthServerWellKnownMux(authServerWellKnownMux))
+	// Create auth server config if enabled
+	if runFlags.AuthServer {
+		authServerCfg, err := buildAuthServerConfig(runFlags)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build auth server config: %w", err)
+		}
+		opts = append(opts, runner.WithAuthServerRunConfig(authServerCfg))
 	}
 
 	// Configure middleware and additional options
@@ -932,136 +923,45 @@ func processOAuthClientSecret(clientSecret, workloadName string) (string, error)
 	return authoauth.ProcessOAuthClientSecret(workloadName, clientSecret)
 }
 
-// createAuthServerMux creates the embedded OAuth authorization server muxes if enabled.
-// Returns two handlers: oauthMux for /oauth/* paths and wellKnownMux for /.well-known/* paths.
-// Returns nil, nil, nil if the auth server is not enabled.
-func createAuthServerMux(
-	ctx context.Context, runFlags *RunFlags, proxyPort int,
-) (oauthMux http.Handler, wellKnownMux http.Handler, err error) {
-	if !runFlags.AuthServer {
-		return nil, nil, nil
-	}
-
-	// Validate that issuer can be determined when using auto-assigned ports
-	if runFlags.AuthServerIssuer == "" && proxyPort == 0 {
-		return nil, nil, fmt.Errorf(
-			"--auth-server-issuer is required when using auto-assigned ports (--proxy-port not set)")
-	}
-
-	// Default issuer URL if not provided
-	issuer := runFlags.AuthServerIssuer
-	if issuer == "" {
-		issuer = fmt.Sprintf("http://localhost:%d", proxyPort)
-	}
-
-	// Load signing key from file (required)
-	if runFlags.AuthServerSigningKey == "" {
-		return nil, nil, fmt.Errorf("--auth-server-signing-key is required when --auth-server is enabled")
-	}
-
-	keyPEM, err := os.ReadFile(runFlags.AuthServerSigningKey)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to read signing key: %w", err)
-	}
-	block, _ := pem.Decode(keyPEM)
-	if block == nil {
-		return nil, nil, fmt.Errorf("failed to decode PEM block from signing key")
-	}
-	rsaKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
-	if err != nil {
-		// Try PKCS8 format
-		key, err2 := x509.ParsePKCS8PrivateKey(block.Bytes)
-		if err2 != nil {
-			return nil, nil, fmt.Errorf("failed to parse signing key: %w (PKCS8: %v)", err, err2)
-		}
-		var ok bool
-		rsaKey, ok = key.(*rsa.PrivateKey)
-		if !ok {
-			return nil, nil, fmt.Errorf("signing key is not an RSA key")
+// buildAuthServerConfig creates an authserver.RunConfig from CLI flags.
+// The config is later used by the runner to create the auth server handlers.
+func buildAuthServerConfig(runFlags *RunFlags) (*authserver.RunConfig, error) {
+	// Build upstream config if upstream IDP is configured
+	var upstream *authserver.RunUpstreamConfig
+	if runFlags.AuthServerUpstreamIssuer != "" {
+		upstream = &authserver.RunUpstreamConfig{
+			Issuer:           runFlags.AuthServerUpstreamIssuer,
+			ClientID:         runFlags.AuthServerUpstreamClientID,
+			ClientSecret:     runFlags.AuthServerUpstreamClientSecret,
+			ClientSecretFile: runFlags.AuthServerUpstreamClientSecretFile,
+			Scopes:           runFlags.AuthServerUpstreamScopes,
 		}
 	}
 
-	// Build the auth server config
-	authServerCfg := authserver.Config{
-		Issuer:               issuer,
-		AccessTokenLifespan:  time.Hour,
-		RefreshTokenLifespan: 24 * time.Hour,
-		AuthCodeLifespan:     10 * time.Minute,
-		Secret:               []byte("dev-secret-must-be-32-bytes-long"),
-		PrivateKeys: []authserver.PrivateKey{{
-			KeyID:     "key-1",
-			Algorithm: "RS256",
-			Key:       rsaKey,
+	// Build the config
+	authServerCfg := &authserver.RunConfig{
+		Enabled:        true,
+		Issuer:         runFlags.AuthServerIssuer,
+		SigningKeyPath: runFlags.AuthServerSigningKey,
+		Upstream:       upstream,
+		// Register a default test client
+		Clients: []authserver.RunClientConfig{{
+			ID:           "test",
+			RedirectURIs: []string{"http://localhost:9999/callback"},
+			Public:       true,
 		}},
-		Upstream: authserver.UpstreamConfig{
-			Issuer:       runFlags.AuthServerUpstreamIssuer,
-			ClientID:     runFlags.AuthServerUpstreamClientID,
-			ClientSecret: runFlags.AuthServerUpstreamClientSecret,
-			Scopes:       runFlags.AuthServerUpstreamScopes,
-			RedirectURI:  issuer + "/oauth/callback",
-		},
 	}
 
-	// Create the OAuth2 config
-	oauth2Config, err := authserver.NewOAuth2Config(&authServerCfg)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create auth server config: %w", err)
+	// Validate signing key is provided
+	if authServerCfg.SigningKeyPath == "" {
+		return nil, fmt.Errorf("--auth-server-signing-key is required when --auth-server is enabled")
 	}
 
-	// Create storage and register a test client
-	storage := authserver.NewMemoryStorage()
-	storage.RegisterClient(&fosite.DefaultClient{
-		ID:            "test",
-		Secret:        nil, // public client
-		RedirectURIs:  []string{"http://localhost:9999/callback"},
-		ResponseTypes: []string{"code"},
-		GrantTypes:    []string{"authorization_code", "refresh_token"},
-		Scopes:        []string{"openid", "profile"},
-		Public:        true,
-	})
-
-	// Create OAuth2 provider using fosite compose
-	jwtStrategy := compose.NewOAuth2JWTStrategy(
-		func(_ context.Context) (interface{}, error) {
-			return rsaKey, nil
-		},
-		compose.NewOAuth2HMACStrategy(oauth2Config.Config),
-		oauth2Config.Config,
-	)
-
-	provider := compose.Compose(
-		oauth2Config.Config,
-		storage,
-		&compose.CommonStrategy{CoreStrategy: jwtStrategy},
-		compose.OAuth2AuthorizeExplicitFactory,
-		compose.OAuth2RefreshTokenGrantFactory,
-		compose.OAuth2PKCEFactory,
-	)
-
-	// Create the router
-	slogLogger := slog.Default()
-	var routerOpts []authserver.RouterOption
-
-	// Create upstream provider if configured
-	if authServerCfg.Upstream.Issuer != "" {
-		upstream, err := authserver.NewOIDCUpstreamProvider(ctx, authServerCfg.Upstream)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to create upstream provider: %w", err)
-		}
-		routerOpts = append(routerOpts, authserver.WithUpstreamProvider(upstream))
+	// When issuer is empty and proxy port is 0, we cannot determine the issuer.
+	// We use a placeholder :0 that the factory will resolve when the actual port is known.
+	if authServerCfg.Issuer == "" {
+		authServerCfg.Issuer = "http://localhost:0"
 	}
 
-	router := authserver.NewRouter(slogLogger, provider, oauth2Config, storage, routerOpts...)
-
-	// Create two separate ServeMux instances for different route groups
-	oauthServeMux := http.NewServeMux()
-	wellKnownServeMux := http.NewServeMux()
-
-	// Register routes on their respective muxes
-	router.OAuthRoutes(oauthServeMux)
-	router.WellKnownRoutes(wellKnownServeMux)
-
-	logger.Infof("Embedded OAuth authorization server configured with issuer: %s", issuer)
-
-	return oauthServeMux, wellKnownServeMux, nil
+	return authServerCfg, nil
 }
