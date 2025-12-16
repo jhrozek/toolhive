@@ -155,8 +155,17 @@ func (c *RunConfig) toInternalConfig(issuer string, rsaKey *rsa.PrivateKey) (*Co
 	return config, nil
 }
 
-// resolveClientSecret returns the client secret, reading from file if needed.
+// resolveClientSecret returns the client secret using the following order of precedence:
+// 1. ClientSecret (direct config value)
+// 2. ClientSecretFile (read from file)
+// 3. UpstreamClientSecretEnvVar environment variable (fallback)
 func (c *RunUpstreamConfig) resolveClientSecret() (string, error) {
+	// 1. Direct config value takes precedence
+	if c.ClientSecret != "" {
+		return c.ClientSecret, nil
+	}
+
+	// 2. Read from file if specified
 	if c.ClientSecretFile != "" {
 		data, err := os.ReadFile(c.ClientSecretFile) // #nosec G304 - file path is provided by user via config
 		if err != nil {
@@ -164,7 +173,14 @@ func (c *RunUpstreamConfig) resolveClientSecret() (string, error) {
 		}
 		return strings.TrimSpace(string(data)), nil
 	}
-	return c.ClientSecret, nil
+
+	// 3. Fallback to environment variable
+	if envSecret := os.Getenv(UpstreamClientSecretEnvVar); envSecret != "" {
+		logger.Debug("Using upstream client secret from environment variable")
+		return envSecret, nil
+	}
+
+	return "", nil
 }
 
 // resolveIssuer replaces :0 in issuer with actual port.

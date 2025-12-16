@@ -4,7 +4,16 @@ package authserver
 
 import (
 	"fmt"
+	"os"
 	"time"
+)
+
+// Environment variable names for upstream configuration
+const (
+	// UpstreamClientSecretEnvVar is the environment variable name for the upstream OAuth client secret.
+	// This corresponds to the "client_secret" field in the upstream configuration.
+	//nolint:gosec // G101: This is an environment variable name, not a credential
+	UpstreamClientSecretEnvVar = "TOOLHIVE_OAUTH_UPSTREAM_CLIENT_SECRET"
 )
 
 // RunConfig is the serializable configuration for the embedded OAuth authorization server.
@@ -114,10 +123,17 @@ func (c *RunUpstreamConfig) Validate() error {
 		return fmt.Errorf("upstream client_id is required")
 	}
 
-	if c.ClientSecret == "" && c.ClientSecretFile == "" {
-		return fmt.Errorf("either upstream client_secret or client_secret_file is required")
+	// Check if client secret is available from any source:
+	// 1. Direct config value (ClientSecret)
+	// 2. File path (ClientSecretFile)
+	// 3. Environment variable (UpstreamClientSecretEnvVar)
+	hasEnvSecret := os.Getenv(UpstreamClientSecretEnvVar) != ""
+	if c.ClientSecret == "" && c.ClientSecretFile == "" && !hasEnvSecret {
+		return fmt.Errorf("either upstream client_secret, client_secret_file, or %s environment variable is required",
+			UpstreamClientSecretEnvVar)
 	}
 
+	// Only check for conflicts between config fields (not env var, since env var is a fallback)
 	if c.ClientSecret != "" && c.ClientSecretFile != "" {
 		return fmt.Errorf("only one of upstream client_secret or client_secret_file can be set")
 	}

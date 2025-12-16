@@ -172,9 +172,20 @@ func (r *Router) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Log upstream authorization URL for debugging
+	r.logger.DebugContext(ctx, "upstream authorization URL",
+		slog.String("url", upstreamURL),
+	)
+	// Log the redirect_uri separately for clarity (best effort - URL was just constructed so should be valid)
+	parsedUpstreamURL, _ := url.Parse(upstreamURL)
+	r.logger.DebugContext(ctx, "upstream redirect_uri",
+		slog.String("redirect_uri", parsedUpstreamURL.Query().Get("redirect_uri")),
+	)
+
 	r.logger.InfoContext(ctx, "redirecting to upstream IDP",
 		slog.String("client_id", clientID),
 		slog.String("upstream_provider", r.upstream.Name()),
+		slog.String("upstream_redirect_uri", parsedUpstreamURL.Query().Get("redirect_uri")),
 	)
 
 	// Redirect user to upstream IDP
