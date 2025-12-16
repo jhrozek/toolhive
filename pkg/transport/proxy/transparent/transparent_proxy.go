@@ -365,15 +365,9 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	}
 
 	// Add .well-known discovery endpoints (no middlewares)
-	// If authServerWellKnownMux is provided (from embedded auth server), it takes precedence
-	// over the default well-known handler (authInfoHandler).
-	if p.authServerWellKnownMux != nil {
-		mux.Handle("/.well-known/", p.authServerWellKnownMux)
-		logger.Info("Embedded OAuth authorization server well-known endpoints enabled at /.well-known/")
-	} else if wellKnownHandler := auth.NewWellKnownHandler(p.authInfoHandler); wellKnownHandler != nil {
-		// Fallback to RFC 9728 OAuth discovery endpoints from authInfoHandler
+	// Both auth server and protected resource metadata can be served simultaneously.
+	if wellKnownHandler := p.createWellKnownHandler(); wellKnownHandler != nil {
 		mux.Handle("/.well-known/", wellKnownHandler)
-		logger.Info("RFC 9728 OAuth discovery endpoints enabled at /.well-known/ (no middlewares)")
 	}
 
 	// Add embedded OAuth authorization server endpoints if provided (no middlewares)
@@ -452,6 +446,50 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 			}
 		}
 	}
+}
+
+// createWellKnownHandler creates a composite handler for all /.well-known/* endpoints.
+// It routes requests to the appropriate handler based on the path:
+//   - /.well-known/openid-configuration, /.well-known/jwks.json -> authServerWellKnownMux
+//   - /.well-known/oauth-protected-resource/* -> auth.NewWellKnownHandler(authInfoHandler)
+//
+// Returns nil if neither handler is available.
+func (p *TransparentProxy) createWellKnownHandler() http.Handler {
+	protectedResourceHandler := auth.NewWellKnownHandler(p.authInfoHandler)
+
+	hasAuthServer := p.authServerWellKnownMux != nil
+	hasProtectedResource := protectedResourceHandler != nil
+
+	// Case 1: Neither handler is available
+	if !hasAuthServer && !hasProtectedResource {
+		return nil
+	}
+
+	// Case 2: Only auth server well-known endpoints
+	if hasAuthServer && !hasProtectedResource {
+		logger.Info("Embedded OAuth authorization server well-known endpoints enabled at /.well-known/")
+		return p.authServerWellKnownMux
+	}
+
+	// Case 3: Only protected resource metadata
+	if !hasAuthServer && hasProtectedResource {
+		logger.Info("RFC 9728 OAuth discovery endpoints enabled at /.well-known/")
+		return protectedResourceHandler
+	}
+
+	// Case 4: Both handlers are available - create composite handler
+	logger.Info("Both embedded OAuth authorization server and RFC 9728 OAuth discovery endpoints enabled at /.well-known/")
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Route based on path prefix
+		// Auth server handles: /.well-known/openid-configuration, /.well-known/jwks.json
+		// Protected resource handler handles: /.well-known/oauth-protected-resource/*
+		if strings.HasPrefix(r.URL.Path, auth.WellKnownOAuthResourcePath) {
+			protectedResourceHandler.ServeHTTP(w, r)
+			return
+		}
+		// All other .well-known paths go to auth server
+		p.authServerWellKnownMux.ServeHTTP(w, r)
+	})
 }
 
 // Stop stops the transparent proxy.
