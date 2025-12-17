@@ -438,7 +438,14 @@ func generateRandomState() (string, error) {
 }
 
 // isValidRedirectURI checks if the redirect URI matches one of the client's registered URIs.
+// For LoopbackClient instances, uses RFC 8252 Section 7.3 compliant loopback matching.
 func isValidRedirectURI(client fosite.Client, redirectURI string) bool {
+	// Check if client supports loopback matching (RFC 8252)
+	if loopbackClient, ok := client.(*LoopbackClient); ok {
+		return loopbackClient.MatchRedirectURI(redirectURI)
+	}
+
+	// Fall back to exact string matching for other clients
 	registeredURIs := client.GetRedirectURIs()
 	for _, uri := range registeredURIs {
 		if uri == redirectURI {

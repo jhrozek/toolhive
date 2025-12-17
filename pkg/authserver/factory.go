@@ -193,9 +193,11 @@ func resolveIssuer(issuer string, proxyPort int) string {
 }
 
 // registerClients adds clients from config to storage.
+// Public clients are wrapped in LoopbackClient to support RFC 8252 Section 7.3
+// compliant loopback redirect URI matching for native OAuth clients.
 func registerClients(storage *MemoryStorage, clients []RunClientConfig) {
 	for _, c := range clients {
-		client := &fosite.DefaultClient{
+		defaultClient := &fosite.DefaultClient{
 			ID:            c.ID,
 			RedirectURIs:  c.RedirectURIs,
 			ResponseTypes: []string{"code"},
@@ -204,7 +206,16 @@ func registerClients(storage *MemoryStorage, clients []RunClientConfig) {
 			Public:        c.Public,
 		}
 		if !c.Public && c.Secret != "" {
-			client.Secret = []byte(c.Secret)
+			defaultClient.Secret = []byte(c.Secret)
+		}
+
+		// Use LoopbackClient for public clients to support RFC 8252 Section 7.3
+		// dynamic port matching for native app loopback redirect URIs.
+		var client fosite.Client
+		if c.Public {
+			client = NewLoopbackClient(defaultClient)
+		} else {
+			client = defaultClient
 		}
 		storage.RegisterClient(client)
 	}
