@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	josev3 "github.com/go-jose/go-jose/v3"
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/compose"
 
@@ -58,7 +59,7 @@ func CreateHandlers(
 	storage := NewMemoryStorage()
 	registerClients(storage, cfg.Clients)
 
-	provider := createProvider(rsaKey, oauth2Config, storage)
+	provider := createProvider(oauth2Config, storage)
 
 	// Create router with optional upstream
 	routerOpts, err := createRouterOpts(ctx, cfg.Upstream, issuer)
@@ -210,9 +211,20 @@ func registerClients(storage *MemoryStorage, clients []RunClientConfig) {
 }
 
 // createProvider creates a fosite provider with JWT strategy.
-func createProvider(rsaKey *rsa.PrivateKey, oauth2Config *OAuth2Config, storage *MemoryStorage) fosite.OAuth2Provider {
+func createProvider(oauth2Config *OAuth2Config, storage *MemoryStorage) fosite.OAuth2Provider {
+	// Convert v4 JWK to v3 JWK for fosite compatibility.
+	// Fosite v0.49.0 uses go-jose/v3, not v4.
+	// This ensures the kid is included in the JWT header.
+	signingKeyV4 := oauth2Config.SigningKey
+	signingKeyV3 := &josev3.JSONWebKey{
+		Key:       signingKeyV4.Key,
+		KeyID:     signingKeyV4.KeyID,
+		Algorithm: signingKeyV4.Algorithm,
+		Use:       signingKeyV4.Use,
+	}
+
 	jwtStrategy := compose.NewOAuth2JWTStrategy(
-		func(_ context.Context) (interface{}, error) { return rsaKey, nil },
+		func(_ context.Context) (interface{}, error) { return signingKeyV3, nil },
 		compose.NewOAuth2HMACStrategy(oauth2Config.Config),
 		oauth2Config.Config,
 	)
