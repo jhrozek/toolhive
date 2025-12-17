@@ -24,6 +24,14 @@ func (r *Router) TokenHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// RFC 8707: Handle resource parameter for audience claim
+	if resource := accessRequest.GetRequestForm().Get("resource"); resource != "" {
+		r.logger.DebugContext(ctx, "granting audience from resource parameter",
+			slog.String("resource", resource),
+		)
+		accessRequest.GrantAudience(resource)
+	}
+
 	// Generate the access response (tokens)
 	response, err := r.provider.NewAccessResponse(ctx, accessRequest)
 	if err != nil {
