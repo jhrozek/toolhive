@@ -382,10 +382,16 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	}
 	p.listener = ln
 
+	// Debug middleware to log all incoming requests (temporary for debugging ngrok rewrite)
+	debugHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		logger.Infof("DEBUG REQUEST: %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
+		mux.ServeHTTP(w, r)
+	})
+
 	// Create the server
 	p.server = &http.Server{
 		Addr:              fmt.Sprintf("%s:%d", p.host, p.port),
-		Handler:           mux,
+		Handler:           debugHandler,
 		ReadHeaderTimeout: 10 * time.Second, // Prevent Slowloris attacks
 	}
 
