@@ -169,6 +169,7 @@ func (p *OIDCUpstreamProvider) AuthorizationURL(state, codeChallenge string, sco
 		"redirect_uri":  {p.config.RedirectURI},
 		"scope":         {strings.Join(scopes, " ")},
 		"state":         {state},
+		"prompt":        {"consent"}, // TODO: Remove - temporarily force consent screen for testing
 	}
 
 	// Add PKCE challenge if provided and supported
