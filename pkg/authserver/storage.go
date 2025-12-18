@@ -78,6 +78,10 @@ type Storage interface {
 
 	// DeletePendingAuthorization removes a pending authorization.
 	DeletePendingAuthorization(ctx context.Context, state string) error
+
+	// RegisterClient registers a new OAuth client.
+	// This supports both static configuration and dynamic client registration (RFC 7591).
+	RegisterClient(client fosite.Client)
 }
 
 // IDPTokenStorage provides storage for upstream IDP tokens.

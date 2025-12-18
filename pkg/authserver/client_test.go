@@ -336,8 +336,8 @@ func TestIsLoopbackHost(t *testing.T) {
 		t.Run(tt.hostname, func(t *testing.T) {
 			t.Parallel()
 
-			result := isLoopbackHost(tt.hostname)
-			assert.Equal(t, tt.isLoopback, result, "isLoopbackHost(%q)", tt.hostname)
+			result := IsLoopbackHost(tt.hostname)
+			assert.Equal(t, tt.isLoopback, result, "IsLoopbackHost(%q)", tt.hostname)
 		})
 	}
 }

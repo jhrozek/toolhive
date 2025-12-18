@@ -76,6 +76,7 @@ type OIDCDiscoveryDocument struct {
 	Issuer                            string   `json:"issuer"`
 	AuthorizationEndpoint             string   `json:"authorization_endpoint"`
 	TokenEndpoint                     string   `json:"token_endpoint"`
+	RegistrationEndpoint              string   `json:"registration_endpoint,omitempty"`
 	JWKSURI                           string   `json:"jwks_uri"`
 	ResponseTypesSupported            []string `json:"response_types_supported"`
 	GrantTypesSupported               []string `json:"grant_types_supported"`
@@ -94,6 +95,7 @@ func (r *Router) OIDCDiscoveryHandler(w http.ResponseWriter, req *http.Request) 
 		Issuer:                            issuer,
 		AuthorizationEndpoint:             issuer + "/oauth/authorize",
 		TokenEndpoint:                     issuer + "/oauth/token",
+		RegistrationEndpoint:              issuer + "/oauth2/register",
 		JWKSURI:                           issuer + "/.well-known/jwks.json",
 		ResponseTypesSupported:            []string{"code"},
 		GrantTypesSupported:               []string{"authorization_code", "refresh_token"},

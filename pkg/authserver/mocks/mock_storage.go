@@ -302,6 +302,18 @@ func (mr *MockStorageMockRecorder) LoadPendingAuthorization(ctx, state any) *gom
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LoadPendingAuthorization", reflect.TypeOf((*MockStorage)(nil).LoadPendingAuthorization), ctx, state)
 }
 
+// RegisterClient mocks base method.
+func (m *MockStorage) RegisterClient(client fosite.Client) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "RegisterClient", client)
+}
+
+// RegisterClient indicates an expected call of RegisterClient.
+func (mr *MockStorageMockRecorder) RegisterClient(client any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RegisterClient", reflect.TypeOf((*MockStorage)(nil).RegisterClient), client)
+}
+
 // RotateRefreshToken mocks base method.
 func (m *MockStorage) RotateRefreshToken(ctx context.Context, requestID, refreshTokenSignature string) error {
 	m.ctrl.T.Helper()

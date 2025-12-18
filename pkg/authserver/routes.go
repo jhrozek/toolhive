@@ -59,7 +59,7 @@ func (r *Router) Routes(mux *http.ServeMux) {
 	r.WellKnownRoutes(mux)
 }
 
-// OAuthRoutes registers only the OAuth endpoints (authorize, callback, token) on the provided mux.
+// OAuthRoutes registers only the OAuth endpoints (authorize, callback, token, register) on the provided mux.
 func (r *Router) OAuthRoutes(mux *http.ServeMux) {
 	// Authorization endpoint (initiates OAuth flow)
 	mux.HandleFunc("GET /oauth/authorize", r.AuthorizeHandler)
@@ -69,6 +69,9 @@ func (r *Router) OAuthRoutes(mux *http.ServeMux) {
 
 	// Token endpoint
 	mux.HandleFunc("POST /oauth/token", r.TokenHandler)
+
+	// Dynamic Client Registration endpoint (RFC 7591)
+	mux.HandleFunc("POST /oauth2/register", r.RegisterClientHandler)
 }
 
 // WellKnownRoutes registers only the well-known endpoints (JWKS, OIDC discovery) on the provided mux.

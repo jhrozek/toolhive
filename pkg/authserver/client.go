@@ -105,12 +105,12 @@ func matchesAsLoopback(requestedURI, registeredURI string) bool {
 	}
 
 	// Must use http scheme (not https) for loopback
-	if requested.Scheme != "http" || registered.Scheme != "http" {
+	if requested.Scheme != schemeHTTP || registered.Scheme != schemeHTTP {
 		return false
 	}
 
 	// Both must be loopback addresses
-	if !isLoopbackHost(requested.Hostname()) || !isLoopbackHost(registered.Hostname()) {
+	if !IsLoopbackHost(requested.Hostname()) || !IsLoopbackHost(registered.Hostname()) {
 		return false
 	}
 
@@ -139,15 +139,17 @@ func isLoopbackURI(uri string) bool {
 	if err != nil {
 		return false
 	}
-	return isLoopbackHost(parsed.Hostname())
+	return IsLoopbackHost(parsed.Hostname())
 }
 
-// isLoopbackHost checks if the hostname is a loopback address per RFC 8252 Section 7.3.
+// IsLoopbackHost checks if the hostname is a loopback address per RFC 8252 Section 7.3.
 // Valid loopback hosts are:
 //   - "127.0.0.1" (IPv4 loopback)
 //   - "::1" (IPv6 loopback, typically written as "[::1]" in URLs)
 //   - "localhost"
-func isLoopbackHost(hostname string) bool {
+//
+// This function is exported for reuse by Dynamic Client Registration (DCR) validation.
+func IsLoopbackHost(hostname string) bool {
 	// Check for localhost (case-insensitive per RFC)
 	if strings.EqualFold(hostname, "localhost") {
 		return true

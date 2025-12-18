@@ -373,7 +373,8 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	// Add embedded OAuth authorization server endpoints if provided (no middlewares)
 	if p.authServerMux != nil {
 		mux.Handle("/oauth/", p.authServerMux)
-		logger.Info("Embedded OAuth authorization server enabled at /oauth/")
+		mux.Handle("/oauth2/", p.authServerMux) // DCR endpoint at /oauth2/register
+		logger.Info("Embedded OAuth authorization server enabled at /oauth/ and /oauth2/")
 	}
 
 	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", p.host, p.port))
