@@ -19,20 +19,83 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
+// HandlerResult contains the handlers and resources created by CreateHandlers.
+type HandlerResult struct {
+	// OAuthMux handles OAuth endpoints (/oauth/authorize, /oauth/token)
+	OAuthMux http.Handler
+
+	// WellKnownMux handles well-known endpoints (/.well-known/*)
+	WellKnownMux http.Handler
+
+	// Storage is the storage instance (implements IDPTokenStorage)
+	Storage Storage
+}
+
+// IDPTokenStorage returns the IDP token storage interface.
+// This allows callers to access IDP token storage without coupling to the concrete Storage type.
+func (r *HandlerResult) IDPTokenStorage() IDPTokenStorage {
+	return r.Storage
+}
+
 // CreateHandlers creates auth server HTTP handlers from RunConfig.
 // Returns nil handlers if config is nil or not enabled.
 // The proxyPort is used to resolve :0 in the issuer URL.
+// This is the backward-compatible version that creates its own storage internally.
 func CreateHandlers(
 	ctx context.Context,
 	cfg *RunConfig,
 	proxyPort int,
 ) (oauthMux http.Handler, wellKnownMux http.Handler, err error) {
-	if cfg == nil || !cfg.Enabled {
+	result, err := CreateHandlersWithResult(ctx, cfg, proxyPort)
+	if err != nil {
+		return nil, nil, err
+	}
+	if result == nil {
 		return nil, nil, nil
+	}
+	return result.OAuthMux, result.WellKnownMux, nil
+}
+
+// CreateHandlersWithResult creates auth server HTTP handlers and returns a HandlerResult
+// that includes access to the storage for sharing with middleware.
+// Returns nil if config is nil or not enabled.
+func CreateHandlersWithResult(
+	ctx context.Context,
+	cfg *RunConfig,
+	proxyPort int,
+) (*HandlerResult, error) {
+	if cfg == nil || !cfg.Enabled {
+		return nil, nil
+	}
+
+	// Create default storage
+	storage, err := NewStorage(nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create storage: %w", err)
+	}
+
+	return CreateHandlersWithStorage(ctx, cfg, proxyPort, storage)
+}
+
+// CreateHandlersWithStorage creates OAuth and well-known handlers using provided storage.
+// This allows sharing storage between auth server and other components like middleware.
+// Returns nil if config is nil or not enabled.
+func CreateHandlersWithStorage(
+	ctx context.Context,
+	cfg *RunConfig,
+	proxyPort int,
+	storage Storage,
+) (*HandlerResult, error) {
+	if cfg == nil || !cfg.Enabled {
+		return nil, nil
+	}
+
+	if storage == nil {
+		return nil, fmt.Errorf("storage cannot be nil")
 	}
 
 	if err := cfg.Validate(); err != nil {
-		return nil, nil, fmt.Errorf("invalid auth server config: %w", err)
+		return nil, fmt.Errorf("invalid auth server config: %w", err)
 	}
 
 	// Resolve issuer URL - replace :0 with actual port if needed
@@ -41,33 +104,38 @@ func CreateHandlers(
 	// Load signing key from file
 	rsaKey, err := LoadSigningKey(cfg.SigningKeyPath)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	// Build internal config from RunConfig
 	internalConfig, err := cfg.toInternalConfig(issuer, rsaKey)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	// Use existing package functions to create components
 	oauth2Config, err := NewOAuth2Config(internalConfig)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create OAuth2 config: %w", err)
+		return nil, fmt.Errorf("failed to create OAuth2 config: %w", err)
 	}
 
-	storage := NewMemoryStorage()
-	registerClients(storage, cfg.Clients)
+	// Cast storage to *MemoryStorage for registerClients and createProvider
+	memStorage, ok := storage.(*MemoryStorage)
+	if !ok {
+		return nil, fmt.Errorf("storage must be *MemoryStorage (other implementations not yet supported)")
+	}
 
-	provider := createProvider(oauth2Config, storage)
+	registerClients(memStorage, cfg.Clients)
+
+	provider := createProvider(oauth2Config, memStorage)
 
 	// Create router with optional upstream
 	routerOpts, err := createRouterOpts(ctx, cfg.Upstream, issuer)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
-	router := NewRouter(slog.Default(), provider, oauth2Config, storage, routerOpts...)
+	router := NewRouter(slog.Default(), provider, oauth2Config, memStorage, routerOpts...)
 
 	// Create and populate muxes
 	oauthServeMux := http.NewServeMux()
@@ -77,7 +145,11 @@ func CreateHandlers(
 
 	logger.Infof("Embedded OAuth authorization server configured with issuer: %s", issuer)
 
-	return oauthServeMux, wellKnownServeMux, nil
+	return &HandlerResult{
+		OAuthMux:     oauthServeMux,
+		WellKnownMux: wellKnownServeMux,
+		Storage:      storage,
+	}, nil
 }
 
 // LoadSigningKey loads an RSA private key from a PEM file.

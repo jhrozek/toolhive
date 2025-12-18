@@ -63,6 +63,10 @@ type Runner struct {
 	// It is cancelled during Cleanup() to stop monitoring
 	monitoringCtx    context.Context
 	monitoringCancel context.CancelFunc
+
+	// idpTokenStorage stores the IDP token storage for middleware access.
+	// This is set when an embedded auth server is configured.
+	idpTokenStorage authserver.IDPTokenStorage
 }
 
 // statusManagerAdapter adapts statuses.StatusManager to auth.StatusUpdater interface
@@ -113,6 +117,13 @@ func (r *Runner) GetConfig() types.RunnerConfig {
 	return r.Config
 }
 
+// GetIDPTokenStorage returns the IDP token storage for middleware.
+// Implements idptokenswap.IDPTokenStorageProvider.
+// Returns nil if no embedded auth server is configured.
+func (r *Runner) GetIDPTokenStorage() authserver.IDPTokenStorage {
+	return r.idpTokenStorage
+}
+
 // GetPort returns the port from the runner config (implements types.RunnerConfig)
 func (c *RunConfig) GetPort() int {
 	return c.Port
@@ -141,7 +152,28 @@ func (r *Runner) Run(ctx context.Context) error {
 		TrustProxyHeaders: r.Config.TrustProxyHeaders,
 	}
 
+	// Create auth server handlers if configured via AuthServerConfig
+	// This MUST happen BEFORE middleware creation so that IDP token storage is available
+	// for middlewares that depend on it (e.g., idp-token-swap middleware).
+	if r.Config.AuthServerConfig != nil && r.Config.AuthServerConfig.Enabled {
+		result, err := authserver.CreateHandlersWithResult(ctx, r.Config.AuthServerConfig, r.Config.Port)
+		if err != nil {
+			return fmt.Errorf("failed to create auth server handlers: %w", err)
+		}
+		if result != nil {
+			transportConfig.AuthServerMux = result.OAuthMux
+			transportConfig.AuthServerWellKnownMux = result.WellKnownMux
+			// Store the IDP token storage for middleware access
+			r.idpTokenStorage = result.IDPTokenStorage()
+		}
+	} else {
+		// Fall back to pre-created handlers for backward compatibility
+		transportConfig.AuthServerMux = r.Config.AuthServerMux
+		transportConfig.AuthServerWellKnownMux = r.Config.AuthServerWellKnownMux
+	}
+
 	// Create middleware from the MiddlewareConfigs instances in the RunConfig.
+	// This happens AFTER auth server creation so storage is available.
 	for _, middlewareConfig := range r.Config.MiddlewareConfigs {
 		// First, get the correct factory function for the middleware type.
 		factory, ok := r.supportedMiddleware[middlewareConfig.Type]
@@ -160,21 +192,6 @@ func (r *Runner) Run(ctx context.Context) error {
 	transportConfig.Middlewares = r.namedMiddlewares
 	transportConfig.AuthInfoHandler = r.authInfoHandler
 	transportConfig.PrometheusHandler = r.prometheusHandler
-
-	// Create auth server handlers if configured via AuthServerConfig
-	// This takes precedence over the pre-created AuthServerMux/AuthServerWellKnownMux handlers
-	if r.Config.AuthServerConfig != nil && r.Config.AuthServerConfig.Enabled {
-		oauthMux, wellKnownMux, err := authserver.CreateHandlers(ctx, r.Config.AuthServerConfig, r.Config.Port)
-		if err != nil {
-			return fmt.Errorf("failed to create auth server handlers: %w", err)
-		}
-		transportConfig.AuthServerMux = oauthMux
-		transportConfig.AuthServerWellKnownMux = wellKnownMux
-	} else {
-		// Fall back to pre-created handlers for backward compatibility
-		transportConfig.AuthServerMux = r.Config.AuthServerMux
-		transportConfig.AuthServerWellKnownMux = r.Config.AuthServerWellKnownMux
-	}
 
 	// Set proxy mode for stdio transport
 	transportConfig.ProxyMode = r.Config.ProxyMode
