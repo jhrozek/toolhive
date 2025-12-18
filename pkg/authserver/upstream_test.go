@@ -333,8 +333,10 @@ func TestOIDCUpstreamProvider_AuthorizationURL(t *testing.T) {
 		}
 	})
 
-	t.Run("authorization URL with custom scopes", func(t *testing.T) {
+	t.Run("authorization URL ignores client scopes and uses config scopes", func(t *testing.T) {
 		t.Parallel()
+		// Client-requested scopes should be ignored; config scopes should always be used
+		// because config scopes represent what the upstream integration requires
 		authURL, err := provider.AuthorizationURL("test-state", "", []string{"custom", "scopes"})
 		if err != nil {
 			t.Fatalf("failed to build authorization URL: %v", err)
@@ -346,8 +348,9 @@ func TestOIDCUpstreamProvider_AuthorizationURL(t *testing.T) {
 		}
 
 		query := parsed.Query()
-		if query.Get("scope") != "custom scopes" {
-			t.Errorf("expected scope='custom scopes', got %q", query.Get("scope"))
+		// Should use config scopes ("openid profile") not the passed-in scopes
+		if query.Get("scope") != "openid profile" {
+			t.Errorf("expected scope='openid profile' (config scopes), got %q", query.Get("scope"))
 		}
 	})
 
@@ -358,6 +361,45 @@ func TestOIDCUpstreamProvider_AuthorizationURL(t *testing.T) {
 			t.Error("expected error for empty state")
 		}
 	})
+}
+
+func TestOIDCUpstreamProvider_AuthorizationURL_DefaultScopes(t *testing.T) {
+	t.Parallel()
+
+	mock := newMockOIDCServer()
+	t.Cleanup(mock.Close)
+
+	// Config with NO scopes - should fall back to defaults
+	config := UpstreamConfig{
+		Issuer:       mock.issuer,
+		ClientID:     "test-client",
+		ClientSecret: "test-secret",
+		RedirectURI:  "http://localhost:8080/callback",
+		// Scopes is intentionally empty
+	}
+
+	ctx := context.Background()
+	provider, err := NewOIDCUpstreamProvider(ctx, config)
+	if err != nil {
+		t.Fatalf("failed to create provider: %v", err)
+	}
+
+	// Even though we pass client scopes, they should be ignored and defaults used
+	authURL, err := provider.AuthorizationURL("test-state", "", []string{"client", "requested", "scopes"})
+	if err != nil {
+		t.Fatalf("failed to build authorization URL: %v", err)
+	}
+
+	parsed, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("failed to parse authorization URL: %v", err)
+	}
+
+	query := parsed.Query()
+	// Should use default scopes since config has none, client scopes are ignored
+	if query.Get("scope") != "openid profile email" {
+		t.Errorf("expected scope='openid profile email' (default scopes), got %q", query.Get("scope"))
+	}
 }
 
 func TestOIDCUpstreamProvider_ExchangeCode(t *testing.T) {

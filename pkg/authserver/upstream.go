@@ -144,7 +144,7 @@ func (*OIDCUpstreamProvider) Name() string {
 }
 
 // AuthorizationURL builds the URL to redirect the user to the upstream IDP.
-func (p *OIDCUpstreamProvider) AuthorizationURL(state, codeChallenge string, scopes []string) (string, error) {
+func (p *OIDCUpstreamProvider) AuthorizationURL(state, codeChallenge string, _ []string) (string, error) {
 	if p.endpoints == nil {
 		return "", errors.New("OIDC endpoints not discovered")
 	}
@@ -153,21 +153,22 @@ func (p *OIDCUpstreamProvider) AuthorizationURL(state, codeChallenge string, sco
 		return "", errors.New("state parameter is required")
 	}
 
-	// Use configured scopes if none provided
-	if len(scopes) == 0 {
-		scopes = p.config.Scopes
-	}
+	// For upstream requests, always use configured scopes if available.
+	// Config scopes represent what the upstream integration requires (e.g., Drive API access).
+	// Client-requested scopes govern the client<->server relationship, not server<->upstream.
+	upstreamScopes := p.config.Scopes
 
-	// Default to basic OIDC scopes if still empty
-	if len(scopes) == 0 {
-		scopes = []string{"openid", "profile", "email"}
+	// Only fall back to defaults if no config scopes
+	if len(upstreamScopes) == 0 {
+		// Default to basic OIDC scopes
+		upstreamScopes = []string{"openid", "profile", "email"}
 	}
 
 	params := url.Values{
 		"response_type": {"code"},
 		"client_id":     {p.config.ClientID},
 		"redirect_uri":  {p.config.RedirectURI},
-		"scope":         {strings.Join(scopes, " ")},
+		"scope":         {strings.Join(upstreamScopes, " ")},
 		"state":         {state},
 		"prompt":        {"consent"}, // TODO: Remove - temporarily force consent screen for testing
 	}
