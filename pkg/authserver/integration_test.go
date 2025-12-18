@@ -161,7 +161,7 @@ func createAuthCodeSession(
 	require.NoError(t, err)
 
 	// Create the session
-	session := NewSession(testSubject, "")
+	session := NewSession(testSubject, "", testClientID)
 	session.SetExpiresAt(fosite.AccessToken, time.Now().Add(time.Hour))
 	session.SetExpiresAt(fosite.RefreshToken, time.Now().Add(24*time.Hour))
 	session.SetExpiresAt(fosite.AuthorizeCode, time.Now().Add(10*time.Minute))

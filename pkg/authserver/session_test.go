@@ -14,29 +14,60 @@ func TestNewSession(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name         string
-		subject      string
-		idpSessionID string
+		name           string
+		subject        string
+		idpSessionID   string
+		clientID       string
+		expectTsid     bool
+		expectClientID bool
 	}{
 		{
-			name:         "with both subject and IDP session ID",
-			subject:      "user@example.com",
-			idpSessionID: "idp-session-123",
+			name:           "with all parameters",
+			subject:        "user@example.com",
+			idpSessionID:   "idp-session-123",
+			clientID:       "test-client-id",
+			expectTsid:     true,
+			expectClientID: true,
 		},
 		{
-			name:         "with empty subject",
-			subject:      "",
-			idpSessionID: "idp-session-456",
+			name:           "with both subject and IDP session ID",
+			subject:        "user@example.com",
+			idpSessionID:   "idp-session-123",
+			clientID:       "",
+			expectTsid:     true,
+			expectClientID: false,
 		},
 		{
-			name:         "with empty IDP session ID",
-			subject:      "user@example.com",
-			idpSessionID: "",
+			name:           "with empty subject",
+			subject:        "",
+			idpSessionID:   "idp-session-456",
+			clientID:       "",
+			expectTsid:     true,
+			expectClientID: false,
 		},
 		{
-			name:         "with both empty",
-			subject:      "",
-			idpSessionID: "",
+			name:           "with empty IDP session ID",
+			subject:        "user@example.com",
+			idpSessionID:   "",
+			clientID:       "",
+			expectTsid:     false,
+			expectClientID: false,
+		},
+		{
+			name:           "with both empty",
+			subject:        "",
+			idpSessionID:   "",
+			clientID:       "",
+			expectTsid:     false,
+			expectClientID: false,
+		},
+		{
+			name:           "with only clientID",
+			subject:        "",
+			idpSessionID:   "",
+			clientID:       "my-client",
+			expectTsid:     false,
+			expectClientID: true,
 		},
 	}
 
@@ -44,16 +75,43 @@ func TestNewSession(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			session := NewSession(tt.subject, tt.idpSessionID)
+			session := NewSession(tt.subject, tt.idpSessionID, tt.clientID)
 
 			require.NotNil(t, session)
 			require.NotNil(t, session.JWTSession)
 			require.NotNil(t, session.JWTClaims)
 			require.NotNil(t, session.JWTHeader)
 			require.NotNil(t, session.JWTHeader.Extra)
+			require.NotNil(t, session.JWTClaims.Extra)
 
 			assert.Equal(t, tt.subject, session.JWTClaims.Subject)
 			assert.Equal(t, tt.idpSessionID, session.IDPSessionID)
+
+			// Verify tsid claim is set correctly
+			if tt.expectTsid {
+				tsid, ok := session.JWTClaims.Extra[TokenSessionIDClaimKey]
+				assert.True(t, ok, "tsid claim should be present")
+				assert.Equal(t, tt.idpSessionID, tsid)
+			} else {
+				_, ok := session.JWTClaims.Extra[TokenSessionIDClaimKey]
+				assert.False(t, ok, "tsid claim should not be present when idpSessionID is empty")
+			}
+
+			// Verify client_id and azp claims are set correctly
+			if tt.expectClientID {
+				clientID, ok := session.JWTClaims.Extra[ClientIDClaimKey]
+				assert.True(t, ok, "client_id claim should be present")
+				assert.Equal(t, tt.clientID, clientID)
+
+				azp, ok := session.JWTClaims.Extra[AuthorizedPartyClaimKey]
+				assert.True(t, ok, "azp claim should be present")
+				assert.Equal(t, tt.clientID, azp)
+			} else {
+				_, ok := session.JWTClaims.Extra[ClientIDClaimKey]
+				assert.False(t, ok, "client_id claim should not be present when clientID is empty")
+				_, ok = session.JWTClaims.Extra[AuthorizedPartyClaimKey]
+				assert.False(t, ok, "azp claim should not be present when clientID is empty")
+			}
 		})
 	}
 }
@@ -86,7 +144,7 @@ func TestSession_Clone(t *testing.T) {
 		},
 		{
 			name:    "fully populated session",
-			session: NewSession("user@example.com", "idp-session-789"),
+			session: NewSession("user@example.com", "idp-session-789", ""),
 			wantNil: false,
 			validate: func(t *testing.T, original *Session, cloned fosite.Session) {
 				t.Helper()
@@ -125,7 +183,7 @@ func TestSession_Clone_DeepCopy(t *testing.T) {
 	t.Parallel()
 
 	// Create original session with specific values
-	original := NewSession("original-subject", "original-idp-session")
+	original := NewSession("original-subject", "original-idp-session", "")
 	original.SetUsername("original-username")
 	original.SetExpiresAt(fosite.AccessToken, time.Now().Add(time.Hour))
 
@@ -156,19 +214,19 @@ func TestSession_SetExpiresAt_GetExpiresAt(t *testing.T) {
 	}{
 		{
 			name:      "access token expiration",
-			session:   NewSession("user", "idp-123"),
+			session:   NewSession("user", "idp-123", ""),
 			tokenType: fosite.AccessToken,
 			expTime:   time.Now().Add(time.Hour),
 		},
 		{
 			name:      "refresh token expiration",
-			session:   NewSession("user", "idp-123"),
+			session:   NewSession("user", "idp-123", ""),
 			tokenType: fosite.RefreshToken,
 			expTime:   time.Now().Add(24 * time.Hour),
 		},
 		{
 			name:      "authorize code expiration",
-			session:   NewSession("user", "idp-123"),
+			session:   NewSession("user", "idp-123", ""),
 			tokenType: fosite.AuthorizeCode,
 			expTime:   time.Now().Add(10 * time.Minute),
 		},
@@ -212,12 +270,12 @@ func TestSession_SetSubject_GetSubject(t *testing.T) {
 	}{
 		{
 			name:    "set subject on new session",
-			session: NewSession("initial", "idp-123"),
+			session: NewSession("initial", "idp-123", ""),
 			subject: "updated-subject",
 		},
 		{
 			name:    "set empty subject",
-			session: NewSession("initial", "idp-123"),
+			session: NewSession("initial", "idp-123", ""),
 			subject: "",
 		},
 		{
@@ -270,12 +328,12 @@ func TestSession_SetUsername_GetUsername(t *testing.T) {
 	}{
 		{
 			name:     "set username on new session",
-			session:  NewSession("subject", "idp-123"),
+			session:  NewSession("subject", "idp-123", ""),
 			username: "john.doe",
 		},
 		{
 			name:     "set empty username",
-			session:  NewSession("subject", "idp-123"),
+			session:  NewSession("subject", "idp-123", ""),
 			username: "",
 		},
 		{
@@ -316,12 +374,12 @@ func TestSession_SetIDPSessionID_GetIDPSessionID(t *testing.T) {
 	}{
 		{
 			name:         "set IDP session ID on new session",
-			session:      NewSession("subject", "initial-idp"),
+			session:      NewSession("subject", "initial-idp", ""),
 			idpSessionID: "updated-idp-session",
 		},
 		{
 			name:         "set empty IDP session ID",
-			session:      NewSession("subject", "initial-idp"),
+			session:      NewSession("subject", "initial-idp", ""),
 			idpSessionID: "",
 		},
 		{
@@ -358,7 +416,7 @@ func TestSession_GetJWTClaims(t *testing.T) {
 		},
 		{
 			name:    "valid session returns claims",
-			session: NewSession("subject", "idp-123"),
+			session: NewSession("subject", "idp-123", ""),
 			wantNil: false,
 		},
 	}
@@ -393,7 +451,7 @@ func TestSession_GetJWTHeader(t *testing.T) {
 		},
 		{
 			name:    "valid session returns header",
-			session: NewSession("subject", "idp-123"),
+			session: NewSession("subject", "idp-123", ""),
 			wantNil: false,
 		},
 	}
@@ -477,7 +535,7 @@ func TestSession_ImplementsFositeSession(t *testing.T) {
 	// Verify that Session implements fosite.Session interface
 	var _ fosite.Session = (*Session)(nil)
 
-	session := NewSession("subject", "idp-123")
+	session := NewSession("subject", "idp-123", "")
 
 	// Test all fosite.Session interface methods
 	assert.Equal(t, "subject", session.GetSubject())
@@ -499,7 +557,7 @@ func TestSession_ImplementsFositeSession(t *testing.T) {
 func TestSession_GetJWTClaims_ReturnsContainer(t *testing.T) {
 	t.Parallel()
 
-	session := NewSession("test-subject", "idp-123")
+	session := NewSession("test-subject", "idp-123", "")
 	claims := session.GetJWTClaims()
 
 	require.NotNil(t, claims)
@@ -512,7 +570,7 @@ func TestSession_GetJWTClaims_ReturnsContainer(t *testing.T) {
 func TestSession_GetJWTHeader_HasExtraMap(t *testing.T) {
 	t.Parallel()
 
-	session := NewSession("subject", "idp-123")
+	session := NewSession("subject", "idp-123", "")
 	header := session.GetJWTHeader()
 
 	require.NotNil(t, header)
@@ -522,7 +580,7 @@ func TestSession_GetJWTHeader_HasExtraMap(t *testing.T) {
 func TestSession_MultipleTokenTypeExpirations(t *testing.T) {
 	t.Parallel()
 
-	session := NewSession("subject", "idp-123")
+	session := NewSession("subject", "idp-123", "")
 
 	accessExpTime := time.Now().Add(time.Hour)
 	refreshExpTime := time.Now().Add(24 * time.Hour)
@@ -540,7 +598,7 @@ func TestSession_MultipleTokenTypeExpirations(t *testing.T) {
 func TestSession_JWTClaimsContainer_Methods(t *testing.T) {
 	t.Parallel()
 
-	session := NewSession("subject", "idp-123")
+	session := NewSession("subject", "idp-123", "")
 	claims := session.GetJWTClaims()
 
 	require.NotNil(t, claims)
@@ -549,4 +607,100 @@ func TestSession_JWTClaimsContainer_Methods(t *testing.T) {
 	mapClaims := claims.ToMapClaims()
 	assert.NotNil(t, mapClaims)
 	assert.Equal(t, "subject", mapClaims["sub"])
+}
+
+func TestSession_TsidClaimInJWT(t *testing.T) {
+	t.Parallel()
+
+	t.Run("tsid appears in JWT claims when IDP session ID is provided", func(t *testing.T) {
+		t.Parallel()
+
+		idpSessionID := "my-idp-session-id-12345"
+		session := NewSession("user@example.com", idpSessionID, "")
+
+		// Get the JWT claims container (what fosite uses to generate JWT)
+		claims := session.GetJWTClaims()
+		require.NotNil(t, claims)
+
+		// Verify tsid is in the claims map that will be encoded into the JWT
+		mapClaims := claims.ToMapClaims()
+		tsid, ok := mapClaims[TokenSessionIDClaimKey]
+		assert.True(t, ok, "tsid claim should be present in JWT claims map")
+		assert.Equal(t, idpSessionID, tsid)
+	})
+
+	t.Run("tsid is absent from JWT claims when IDP session ID is empty", func(t *testing.T) {
+		t.Parallel()
+
+		session := NewSession("user@example.com", "", "")
+
+		claims := session.GetJWTClaims()
+		require.NotNil(t, claims)
+
+		mapClaims := claims.ToMapClaims()
+		_, ok := mapClaims[TokenSessionIDClaimKey]
+		assert.False(t, ok, "tsid claim should not be present when IDP session ID is empty")
+	})
+}
+
+func TestTokenSessionIDClaimKey(t *testing.T) {
+	t.Parallel()
+
+	// Verify the constant has the expected value
+	assert.Equal(t, "tsid", TokenSessionIDClaimKey)
+}
+
+func TestClientIDClaimKey(t *testing.T) {
+	t.Parallel()
+
+	// Verify the constant has the expected value
+	assert.Equal(t, "client_id", ClientIDClaimKey)
+}
+
+func TestAuthorizedPartyClaimKey(t *testing.T) {
+	t.Parallel()
+
+	// Verify the constant has the expected value
+	assert.Equal(t, "azp", AuthorizedPartyClaimKey)
+}
+
+func TestSession_ClientIDAndAzpClaimsInJWT(t *testing.T) {
+	t.Parallel()
+
+	t.Run("client_id and azp appear in JWT claims when clientID is provided", func(t *testing.T) {
+		t.Parallel()
+
+		clientID := "my-oauth-client-id"
+		session := NewSession("user@example.com", "idp-session", clientID)
+
+		// Get the JWT claims container (what fosite uses to generate JWT)
+		claims := session.GetJWTClaims()
+		require.NotNil(t, claims)
+
+		// Verify claims are in the claims map that will be encoded into the JWT
+		mapClaims := claims.ToMapClaims()
+
+		gotClientID, ok := mapClaims[ClientIDClaimKey]
+		assert.True(t, ok, "client_id claim should be present in JWT claims map")
+		assert.Equal(t, clientID, gotClientID)
+
+		gotAzp, ok := mapClaims[AuthorizedPartyClaimKey]
+		assert.True(t, ok, "azp claim should be present in JWT claims map")
+		assert.Equal(t, clientID, gotAzp)
+	})
+
+	t.Run("client_id and azp are absent from JWT claims when clientID is empty", func(t *testing.T) {
+		t.Parallel()
+
+		session := NewSession("user@example.com", "idp-session", "")
+
+		claims := session.GetJWTClaims()
+		require.NotNil(t, claims)
+
+		mapClaims := claims.ToMapClaims()
+		_, ok := mapClaims[ClientIDClaimKey]
+		assert.False(t, ok, "client_id claim should not be present when clientID is empty")
+		_, ok = mapClaims[AuthorizedPartyClaimKey]
+		assert.False(t, ok, "azp claim should not be present when clientID is empty")
+	})
 }

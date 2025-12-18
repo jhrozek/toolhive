@@ -24,6 +24,16 @@ type IDPTokens struct {
 
 	// ExpiresAt is when the access token expires.
 	ExpiresAt time.Time
+
+	// Subject is the user identifier from the IDP.
+	// This binding field is validated on lookup to prevent cross-session attacks
+	// by ensuring the JWT "sub" claim matches this value.
+	Subject string
+
+	// ClientID is the OAuth client that initiated the authorization.
+	// This binding field is validated on lookup to prevent cross-session attacks
+	// by ensuring the JWT "client_id" or "azp" claim matches this value.
+	ClientID string
 }
 
 // IsExpired returns true if the access token has expired.

@@ -294,6 +294,14 @@ func (r *Router) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Set binding fields on IDP tokens for cross-session attack prevention.
+	// These fields are validated when looking up IDP tokens to ensure the
+	// JWT claims match the original authorization context.
+	idpTokens.ClientID = pending.ClientID
+	if userInfo != nil {
+		idpTokens.Subject = userInfo.Subject
+	}
+
 	if err := r.storage.StoreIDPTokens(ctx, sessionID, idpTokens); err != nil {
 		r.logger.ErrorContext(ctx, "failed to store IDP tokens",
 			slog.String("error", err.Error()),
@@ -344,8 +352,8 @@ func (r *Router) createAuthorizationCode(
 		subject = userInfo.Subject
 	}
 
-	// Create the session with IDP session reference
-	session := NewSession(subject, sessionID)
+	// Create the session with IDP session reference and client ID for binding
+	session := NewSession(subject, sessionID, pending.ClientID)
 	if userInfo != nil && userInfo.Email != "" {
 		session.SetUsername(userInfo.Email)
 	}

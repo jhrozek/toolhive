@@ -598,6 +598,8 @@ func (s *MemoryStorage) StoreIDPTokens(_ context.Context, sessionID string, toke
 			RefreshToken: tokens.RefreshToken,
 			IDToken:      tokens.IDToken,
 			ExpiresAt:    tokens.ExpiresAt,
+			Subject:      tokens.Subject,
+			ClientID:     tokens.ClientID,
 		}
 	}
 

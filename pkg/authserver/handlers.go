@@ -12,7 +12,8 @@ func (r *Router) TokenHandler(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 
 	// Create a new session for the token request
-	session := NewSession("", "")
+	// Note: clientID is empty here as fosite will populate it from the stored authorize session
+	session := NewSession("", "", "")
 
 	// Parse and validate the access request
 	accessRequest, err := r.provider.NewAccessRequest(ctx, req, session)

@@ -56,13 +56,13 @@ func newMockRequester(id string, client fosite.Client) *mockRequester {
 		grantedScopes:     fosite.Arguments{"openid"},
 		grantedAudience:   fosite.Arguments{},
 		form:              make(url.Values),
-		session:           NewSession("test-subject", "test-idp-session"),
+		session:           NewSession("test-subject", "test-idp-session", ""),
 	}
 }
 
 // newMockRequesterWithExpiration creates a mock requester with specific expiration times.
 func newMockRequesterWithExpiration(id string, client fosite.Client, tokenType fosite.TokenType, expiresAt time.Time) *mockRequester {
-	session := NewSession("test-subject", "test-idp-session")
+	session := NewSession("test-subject", "test-idp-session", "")
 	session.SetExpiresAt(tokenType, expiresAt)
 
 	return &mockRequester{
@@ -591,6 +591,8 @@ func TestMemoryStorage_IDPTokens(t *testing.T) {
 			RefreshToken: "idp-refresh-token",
 			IDToken:      "idp-id-token",
 			ExpiresAt:    time.Now().Add(time.Hour),
+			Subject:      "user@example.com",
+			ClientID:     "test-client-id",
 		}
 
 		err := storage.StoreIDPTokens(ctx, sessionID, tokens)
@@ -601,6 +603,8 @@ func TestMemoryStorage_IDPTokens(t *testing.T) {
 		assert.Equal(t, tokens.AccessToken, retrieved.AccessToken)
 		assert.Equal(t, tokens.RefreshToken, retrieved.RefreshToken)
 		assert.Equal(t, tokens.IDToken, retrieved.IDToken)
+		assert.Equal(t, tokens.Subject, retrieved.Subject)
+		assert.Equal(t, tokens.ClientID, retrieved.ClientID)
 	})
 
 	t.Run("get non-existent", func(t *testing.T) {
@@ -623,7 +627,11 @@ func TestMemoryStorage_IDPTokens(t *testing.T) {
 		defer storage.Close()
 
 		sessionID := "session-to-delete"
-		tokens := &IDPTokens{AccessToken: "test"}
+		tokens := &IDPTokens{
+			AccessToken: "test",
+			Subject:     "user@example.com",
+			ClientID:    "test-client",
+		}
 		err := storage.StoreIDPTokens(ctx, sessionID, tokens)
 		require.NoError(t, err)
 
@@ -643,8 +651,16 @@ func TestMemoryStorage_IDPTokens(t *testing.T) {
 		defer storage.Close()
 
 		sessionID := "session-overwrite"
-		tokens1 := &IDPTokens{AccessToken: "token-1"}
-		tokens2 := &IDPTokens{AccessToken: "token-2"}
+		tokens1 := &IDPTokens{
+			AccessToken: "token-1",
+			Subject:     "user1@example.com",
+			ClientID:    "client-1",
+		}
+		tokens2 := &IDPTokens{
+			AccessToken: "token-2",
+			Subject:     "user2@example.com",
+			ClientID:    "client-2",
+		}
 
 		err := storage.StoreIDPTokens(ctx, sessionID, tokens1)
 		require.NoError(t, err)
@@ -655,6 +671,36 @@ func TestMemoryStorage_IDPTokens(t *testing.T) {
 		retrieved, err := storage.GetIDPTokens(ctx, sessionID)
 		require.NoError(t, err)
 		assert.Equal(t, "token-2", retrieved.AccessToken)
+		assert.Equal(t, "user2@example.com", retrieved.Subject)
+		assert.Equal(t, "client-2", retrieved.ClientID)
+	})
+
+	t.Run("binding fields are stored and retrieved correctly", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := context.Background()
+		storage := NewMemoryStorage()
+		defer storage.Close()
+
+		sessionID := "session-with-binding"
+		tokens := &IDPTokens{
+			AccessToken:  "access-token",
+			RefreshToken: "refresh-token",
+			IDToken:      "id-token",
+			ExpiresAt:    time.Now().Add(time.Hour),
+			Subject:      "subject-123",
+			ClientID:     "client-abc",
+		}
+
+		err := storage.StoreIDPTokens(ctx, sessionID, tokens)
+		require.NoError(t, err)
+
+		retrieved, err := storage.GetIDPTokens(ctx, sessionID)
+		require.NoError(t, err)
+
+		// Verify binding fields are correctly stored
+		assert.Equal(t, "subject-123", retrieved.Subject)
+		assert.Equal(t, "client-abc", retrieved.ClientID)
 	})
 }
 
@@ -1020,7 +1066,7 @@ func TestGetExpirationFromRequester(t *testing.T) {
 		t.Parallel()
 
 		// Session without expiration set
-		session := NewSession("test", "idp")
+		session := NewSession("test", "idp", "")
 		request := &mockRequester{session: session}
 		defaultTTL := time.Hour
 		before := time.Now()
@@ -1035,7 +1081,7 @@ func TestGetExpirationFromRequester(t *testing.T) {
 		t.Parallel()
 
 		expectedExp := time.Now().Add(2 * time.Hour)
-		session := NewSession("test", "idp")
+		session := NewSession("test", "idp", "")
 		session.SetExpiresAt(fosite.AccessToken, expectedExp)
 		request := &mockRequester{session: session}
 
