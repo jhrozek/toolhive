@@ -47,17 +47,16 @@ type Handler struct {
 // NewHandler creates a new Handler with the given dependencies.
 // upstreams defines the ordered sequence of upstream providers consulted
 // during multi-upstream authorization flows (e.g., sequential token acquisition).
+// upstreams may be empty for SPIFFE-only deployments where only the
+// client_credentials grant is needed (no human login flows).
 //
-// Returns an error if upstreams is empty or if any entry has an empty name or nil provider.
+// Returns an error if any upstream entry has an empty name or nil provider.
 func NewHandler(
 	provider fosite.OAuth2Provider,
 	config *server.AuthorizationServerConfig,
 	stor storage.Storage,
 	upstreams []NamedUpstream,
 ) (*Handler, error) {
-	if len(upstreams) == 0 {
-		return nil, fmt.Errorf("handlers: upstreams must not be empty")
-	}
 	for _, u := range upstreams {
 		if u.Name == "" {
 			return nil, fmt.Errorf("handlers: upstream entry has empty name")

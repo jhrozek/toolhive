@@ -422,9 +422,11 @@ func (c *Config) Validate() error {
 }
 
 // validateUpstreams validates the upstream configurations.
+// Upstreams may be empty when the AS is configured for SPIFFE-only mode
+// (client_credentials grant with mTLS, no human login flows).
 func (c *Config) validateUpstreams() error {
 	if len(c.Upstreams) == 0 {
-		return fmt.Errorf("at least one upstream is required")
+		return nil
 	}
 	// Track names for uniqueness checking
 	seenNames := make(map[string]bool)

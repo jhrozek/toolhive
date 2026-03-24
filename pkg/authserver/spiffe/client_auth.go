@@ -78,6 +78,7 @@ func ClientAuthPreHandler(stor storage.Storage, scopesSupported, allowedAudience
 		if clientID == "" {
 			clientID = spiffeIDStr
 			r.Form.Set("client_id", clientID)
+			r.PostForm.Set("client_id", clientID)
 		}
 
 		// Validate that the presented client_id matches the SPIFFE ID from the cert.
@@ -106,7 +107,10 @@ func ClientAuthPreHandler(stor storage.Storage, scopesSupported, allowedAudience
 
 		// Inject the dummy secret so fosite's client_secret_post authentication
 		// succeeds. The real authentication already happened at the TLS layer.
+		// Both Form and PostForm must be set because fosite reads r.PostForm
+		// directly (see fosite access_request_handler.go).
 		r.Form.Set("client_secret", internalClientSecret)
+		r.PostForm.Set("client_secret", internalClientSecret)
 
 		slog.Debug("SPIFFE client authenticated via mTLS",
 			"client_id", clientID,

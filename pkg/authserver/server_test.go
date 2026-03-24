@@ -81,16 +81,15 @@ func TestNew(t *testing.T) {
 			errContains: "HMAC secret must be at least 32 bytes",
 		},
 		{
-			name: "missing upstreams returns error",
+			name: "empty upstreams succeeds for SPIFFE-only mode",
 			cfg: Config{
 				Issuer:           "https://example.com",
 				KeyProvider:      validKeyProvider,
 				HMACSecrets:      validHMAC,
 				AllowedAudiences: []string{"https://mcp.example.com"},
 			},
-			storageNil:  false,
-			wantErr:     true,
-			errContains: "at least one upstream is required",
+			storageNil: false,
+			wantErr:    false,
 		},
 		{
 			name: "missing allowed audiences returns error",

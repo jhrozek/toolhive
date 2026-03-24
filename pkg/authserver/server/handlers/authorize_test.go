@@ -156,14 +156,16 @@ func TestAuthorizeHandler_PlainChallengeMethodAcceptedButValidatedAtToken(t *tes
 	assert.Contains(t, location, "https://idp.example.com/authorize")
 }
 
-func TestNewHandler_ErrorsOnEmptyUpstreams(t *testing.T) {
+func TestNewHandler_AcceptsEmptyUpstreams(t *testing.T) {
 	t.Parallel()
 
+	// Empty upstreams is allowed for SPIFFE-only deployments
+	// (client_credentials grant only, no human login flows)
 	_, err := NewHandler(nil, nil, nil, nil)
-	require.Error(t, err, "NewHandler should error when upstreams is nil")
+	require.NoError(t, err, "NewHandler should accept nil upstreams")
 
 	_, err = NewHandler(nil, nil, nil, []NamedUpstream{})
-	require.Error(t, err, "NewHandler should error when upstreams is empty slice")
+	require.NoError(t, err, "NewHandler should accept empty upstreams")
 }
 
 func TestAuthorizeHandler_RedirectsToUpstream(t *testing.T) {

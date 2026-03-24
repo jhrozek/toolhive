@@ -625,15 +625,15 @@ func TestNewEmbeddedAuthServer(t *testing.T) {
 		assert.Nil(t, server)
 	})
 
-	t.Run("missing upstreams returns error", func(t *testing.T) {
+	t.Run("empty upstreams succeeds for SPIFFE-only mode", func(t *testing.T) {
 		t.Parallel()
 
 		cfg := createMinimalValidConfig()
 		cfg.Upstreams = nil
 
 		server, err := NewEmbeddedAuthServer(context.Background(), cfg)
-		require.Error(t, err)
-		assert.Nil(t, server)
+		require.NoError(t, err)
+		assert.NotNil(t, server)
 	})
 
 	t.Run("missing allowed audiences returns error", func(t *testing.T) {
