@@ -40,6 +40,20 @@ import (
 // TODO: Set to "v1.0.0" when we clean up the middleware configuration.
 const CurrentSchemaVersion = "v0.1.0"
 
+// TLSConfig contains TLS configuration for the proxy listener.
+// When set, the proxy serves HTTPS instead of plain HTTP.
+type TLSConfig struct {
+	// CertFile is the path to the TLS certificate file (PEM-encoded).
+	CertFile string `json:"cert_file" yaml:"cert_file"`
+
+	// KeyFile is the path to the TLS private key file (PEM-encoded).
+	KeyFile string `json:"key_file" yaml:"key_file"`
+
+	// ClientCAFile is the path to the CA certificate file for verifying client certificates.
+	// When set, the proxy accepts (but does not require) client certificates.
+	ClientCAFile string `json:"client_ca_file,omitempty" yaml:"client_ca_file,omitempty"`
+}
+
 // RunConfig contains all the configuration needed to run an MCP server
 // It is serializable to JSON and YAML
 // NOTE: This format is importable and exportable, and as a result should be
@@ -230,6 +244,10 @@ type RunConfig struct {
 	// Only applicable when running in Kubernetes with the ToolHive operator.
 	// When nil, no scaling configuration is applied (single-replica default behavior).
 	ScalingConfig *ScalingConfig `json:"scaling_config,omitempty" yaml:"scaling_config,omitempty"`
+
+	// TLSConfig contains TLS configuration for the proxy listener.
+	// When set, the proxy serves HTTPS with optional client certificate verification.
+	TLSConfig *TLSConfig `json:"tls_config,omitempty" yaml:"tls_config,omitempty"`
 }
 
 // ScalingConfig contains configuration for horizontal scaling of the proxy runner backend.

@@ -7,6 +7,8 @@ package runner
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -180,6 +182,18 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Set proxy mode for stdio transport
 	transportConfig.ProxyMode = r.Config.ProxyMode
+
+	// Build TLS config from RunConfig if present
+	if r.Config.TLSConfig != nil {
+		tlsCfg, err := buildTLSConfig(r.Config.TLSConfig)
+		if err != nil {
+			return fmt.Errorf("failed to build TLS config: %w", err)
+		}
+		transportConfig.TLSConfig = tlsCfg
+		slog.Debug("TLS enabled for proxy listener",
+			"cert_file", r.Config.TLSConfig.CertFile,
+			"client_ca_configured", r.Config.TLSConfig.ClientCAFile != "")
+	}
 
 	// Process secrets before middleware population so that resolved values
 	// (e.g., header forward secrets) are available to middleware factories.
@@ -893,4 +907,60 @@ func waitForInitializeSuccess(ctx context.Context, serverURL, transportType stri
 			delay = maxDelay
 		}
 	}
+}
+
+// buildTLSConfig constructs a *tls.Config from the runner's TLSConfig.
+// It uses a GetCertificate callback that reloads the certificate from disk
+// on each handshake, supporting cert-manager rotation without restarts.
+func buildTLSConfig(cfg *TLSConfig) (*tls.Config, error) {
+	if cfg.CertFile == "" || cfg.KeyFile == "" {
+		return nil, fmt.Errorf("TLS cert_file and key_file are both required")
+	}
+
+	// Validate that cert and key files exist
+	if _, err := os.Stat(cfg.CertFile); err != nil {
+		return nil, fmt.Errorf("TLS cert file not found: %w", err)
+	}
+	if _, err := os.Stat(cfg.KeyFile); err != nil {
+		return nil, fmt.Errorf("TLS key file not found: %w", err)
+	}
+
+	tlsCfg := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		// Reload certificate from disk on each handshake to support
+		// cert-manager rotation without proxy restart.
+		// Note: this performs disk I/O per connection. Acceptable for PoC
+		// traffic levels; for high-throughput production use, consider
+		// caching the cert with periodic refresh.
+		GetCertificate: func(_ *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
+			if err != nil {
+				return nil, fmt.Errorf("failed to load TLS certificate: %w", err)
+			}
+			return &cert, nil
+		},
+	}
+
+	// Configure client certificate verification if a CA file is provided.
+	// Note: the CA pool is loaded once at startup and is not reloaded on
+	// CA rotation. A proxy restart is required if the CA changes. For
+	// production, consider a background goroutine that watches the file.
+	if cfg.ClientCAFile != "" {
+		caCert, err := os.ReadFile(cfg.ClientCAFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read client CA file: %w", err)
+		}
+		caPool := x509.NewCertPool()
+		if !caPool.AppendCertsFromPEM(caCert) {
+			return nil, fmt.Errorf("failed to parse client CA certificate")
+		}
+		tlsCfg.ClientCAs = caPool
+		// Accept but do not require client certificates. This supports both
+		// browser OIDC flows (no client cert) and SPIFFE mTLS flows (with
+		// client cert). Application-layer auth (OIDC middleware, Cedar) is
+		// still required for access control when no client cert is presented.
+		tlsCfg.ClientAuth = tls.VerifyClientCertIfGiven
+	}
+
+	return tlsCfg, nil
 }

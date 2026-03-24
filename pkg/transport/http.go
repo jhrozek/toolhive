@@ -5,6 +5,7 @@ package transport
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -53,6 +54,10 @@ type HTTPTransport struct {
 
 	// trustProxyHeaders indicates whether to trust X-Forwarded-* headers
 	trustProxyHeaders bool
+
+	// tlsConfig is the TLS configuration for the proxy listener.
+	// When non-nil, the proxy serves HTTPS instead of plain HTTP.
+	tlsConfig *tls.Config
 
 	// Remote MCP server support
 	remoteURL string
@@ -103,6 +108,7 @@ func NewHTTPTransport(
 	prefixHandlers map[string]http.Handler,
 	endpointPrefix string,
 	trustProxyHeaders bool,
+	tlsConfig *tls.Config,
 	middlewares ...types.NamedMiddleware,
 ) *HTTPTransport {
 	if host == "" {
@@ -128,6 +134,7 @@ func NewHTTPTransport(
 		prefixHandlers:    prefixHandlers,
 		endpointPrefix:    endpointPrefix,
 		trustProxyHeaders: trustProxyHeaders,
+		tlsConfig:         tlsConfig,
 		shutdownCh:        make(chan struct{}),
 	}
 }
@@ -319,6 +326,9 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		proxyOptions = append(proxyOptions, transparent.WithRemoteBasePath(remoteBasePath))
 	}
 	proxyOptions = append(proxyOptions, transparent.WithRemoteRawQuery(remoteRawQuery))
+	if t.tlsConfig != nil {
+		proxyOptions = append(proxyOptions, transparent.WithTLSConfig(t.tlsConfig))
+	}
 
 	// Create the transparent proxy
 	t.proxy = transparent.NewTransparentProxyWithOptions(

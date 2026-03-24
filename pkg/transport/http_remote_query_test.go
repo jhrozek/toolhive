@@ -85,6 +85,7 @@ func TestHTTPTransport_Start_RemoteURLQueryParams(t *testing.T) {
 				nil,   // prefixHandlers
 				"",    // endpointPrefix
 				false, // trustProxyHeaders
+				nil,   // tlsConfig
 			)
 			transport.SetRemoteURL(remoteURL)
 

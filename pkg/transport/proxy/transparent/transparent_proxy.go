@@ -8,6 +8,7 @@ package transparent
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -128,6 +129,10 @@ type TransparentProxy struct {
 
 	// Shutdown timeout for graceful HTTP server shutdown (default: 30 seconds)
 	shutdownTimeout time.Duration
+
+	// tlsConfig is the TLS configuration for the listener.
+	// When non-nil, the listener is wrapped with TLS (HTTPS).
+	tlsConfig *tls.Config
 }
 
 const (
@@ -240,6 +245,17 @@ func WithSessionStorage(storage session.Storage) Option {
 			func(id string) session.Session { return session.NewProxySession(id) },
 			storage,
 		)
+	}
+}
+
+// WithTLSConfig sets the TLS configuration for the proxy listener.
+// When set, the listener is wrapped with tls.NewListener so the proxy
+// serves HTTPS instead of plain HTTP.
+func WithTLSConfig(cfg *tls.Config) Option {
+	return func(p *TransparentProxy) {
+		if cfg != nil {
+			p.tlsConfig = cfg
+		}
 	}
 }
 
@@ -706,6 +722,13 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
 	}
+
+	// Wrap listener with TLS if configured
+	if p.tlsConfig != nil {
+		ln = tls.NewListener(ln, p.tlsConfig)
+		slog.Debug("TLS enabled on proxy listener", "addr", ln.Addr().String())
+	}
+
 	p.listener = ln
 
 	// Create the server

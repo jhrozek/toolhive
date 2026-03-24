@@ -9,6 +9,7 @@ package types
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"net/http"
 
@@ -270,6 +271,10 @@ type Config struct {
 	//	  "/.well-known/oauth-authorization-server": authServerHandler,
 	//	}
 	PrefixHandlers map[string]http.Handler
+
+	// TLSConfig is the TLS configuration for the proxy listener.
+	// When non-nil, the proxy serves HTTPS instead of plain HTTP.
+	TLSConfig *tls.Config
 }
 
 // ProxyMode represents the proxy mode for stdio transport.
