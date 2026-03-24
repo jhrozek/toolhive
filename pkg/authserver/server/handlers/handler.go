@@ -23,6 +23,7 @@ import (
 	"github.com/ory/fosite"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server"
+	"github.com/stacklok/toolhive/pkg/authserver/spiffe"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
@@ -83,10 +84,23 @@ func (h *Handler) Routes() http.Handler {
 }
 
 // OAuthRoutes registers OAuth endpoints (authorize, callback, token, register) on the provided router.
+// The token endpoint is wrapped with a SPIFFE client authentication pre-handler that
+// auto-registers mTLS-authenticated SPIFFE clients before fosite processes the request.
 func (h *Handler) OAuthRoutes(r chi.Router) {
 	r.Get("/oauth/authorize", h.AuthorizeHandler)
 	r.Get("/oauth/callback", h.CallbackHandler)
-	r.Post("/oauth/token", h.TokenHandler)
+
+	// Wrap the token endpoint with SPIFFE client auth so that mTLS-authenticated
+	// agents using client_credentials are auto-registered and their dummy secret
+	// is injected before fosite's built-in client authentication runs.
+	tokenHandler := spiffe.ClientAuthPreHandler(
+		h.storage,
+		h.config.ScopesSupported,
+		h.config.AllowedAudiences,
+		http.HandlerFunc(h.TokenHandler),
+	)
+	r.Post("/oauth/token", tokenHandler.ServeHTTP)
+
 	r.Post("/oauth/register", h.RegisterClientHandler)
 }
 

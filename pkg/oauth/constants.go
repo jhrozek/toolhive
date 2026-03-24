@@ -48,11 +48,16 @@ const (
 	ResponseTypeCode = "code"
 )
 
-// Token endpoint authentication methods as defined by RFC 7591.
+// Token endpoint authentication methods as defined by RFC 7591 and RFC 8705.
 const (
 	// TokenEndpointAuthMethodNone indicates no client authentication (public clients).
 	// Typically used with PKCE for native/mobile applications.
 	TokenEndpointAuthMethodNone = "none"
+
+	// TokenEndpointAuthMethodTLSClientAuth indicates mutual TLS client authentication
+	// per RFC 8705 Section 2. Used for SPIFFE-authenticated agents where the client
+	// identity is established via the TLS client certificate.
+	TokenEndpointAuthMethodTLSClientAuth = "tls_client_auth"
 )
 
 // PKCE (Proof Key for Code Exchange) methods as defined by RFC 7636.

@@ -9,6 +9,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
+	"github.com/stacklok/toolhive/pkg/authserver/spiffe"
 )
 
 // TokenHandler handles POST /oauth/token requests.
@@ -16,13 +17,17 @@ import (
 func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 
-	// Create a placeholder session for the token request.
-	// All parameters are empty because Fosite's NewAccessRequest will:
-	// 1. Extract the authorization code from the request
-	// 2. Retrieve the stored authorize session from storage (created in CallbackHandler)
-	// 3. Use the stored session's claims (subject, tsid, client_id) for token generation
-	// This session object is only used as a deserialization template.
-	sess := session.New("", "", "", session.UserClaims{})
+	// Create a session for the token request.
+	// For authorization_code grants, fosite overwrites this with the stored session.
+	// For client_credentials grants (SPIFFE agents), we set the subject and client_id
+	// from the SPIFFE ID since there is no stored session.
+	subject := ""
+	clientID := ""
+	if spiffeID, ok := spiffe.SPIFFEIDFromContext(ctx); ok {
+		subject = spiffeID.String()
+		clientID = spiffeID.String()
+	}
+	sess := session.New(subject, "", clientID, session.UserClaims{})
 
 	// Parse and validate the access request
 	accessRequest, err := h.provider.NewAccessRequest(ctx, req, sess)
