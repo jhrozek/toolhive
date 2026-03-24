@@ -1,0 +1,23 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: authserver-tls
+  namespace: toolhive-system
+spec:
+  secretName: authserver-tls-secret
+  duration: 8760h
+  renewBefore: 720h
+  commonName: authserver.toolhive-system.svc.cluster.local
+  dnsNames:
+    - authserver
+    - authserver.toolhive-system.svc
+    - authserver.toolhive-system.svc.cluster.local
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  usages:
+    - server auth
+  issuerRef:
+    name: spiffe-ca-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io

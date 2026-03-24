@@ -1,0 +1,7 @@
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: spiffe-ca-issuer
+spec:
+  ca:
+    secretName: spiffe-root-ca-secret

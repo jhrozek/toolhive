@@ -1,0 +1,17 @@
+apiVersion: policy.cert-manager.io/v1alpha1
+kind: CertificateRequestPolicy
+metadata:
+  name: allow-server-certs
+spec:
+  allowed:
+    commonName:
+      value: "*.svc.cluster.local"
+    dnsNames:
+      values: ["*.svc.cluster.local", "*.svc", "*"]
+    usages:
+      - "server auth"
+  selector:
+    issuerRef:
+      name: spiffe-ca-issuer
+      kind: ClusterIssuer
+      group: cert-manager.io

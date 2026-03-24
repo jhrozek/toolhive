@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: test-agent
+  namespace: default
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: spiffe-test
+  namespace: default
+spec:
+  serviceAccountName: test-agent
+  containers:
+    - name: test
+      image: busybox:latest
+      command: ["sleep", "3600"]
+      volumeMounts:
+        - name: spiffe-certs
+          mountPath: /var/run/secrets/spiffe.io
+          readOnly: true
+  volumes:
+    - name: spiffe-certs
+      csi:
+        driver: spiffe.csi.cert-manager.io
+        readOnly: true
+        volumeAttributes:
+          spiffe.csi.cert-manager.io/certificate-duration: "1h"
