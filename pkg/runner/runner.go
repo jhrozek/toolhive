@@ -25,6 +25,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
+	authserverspiffe "github.com/stacklok/toolhive/pkg/authserver/spiffe"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	ct "github.com/stacklok/toolhive/pkg/container"
@@ -292,7 +293,23 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		// Mount auth server routes at specific prefixes to avoid conflicts with MCP endpoints
 		// (e.g., /.well-known/oauth-protected-resource is an MCP endpoint, not auth server)
-		transportConfig.PrefixHandlers = r.embeddedAuthServer.Routes()
+		prefixHandlers := r.embeddedAuthServer.Routes()
+
+		// Wrap with SPIFFE middleware when a trust domain is configured.
+		// This extracts and validates SPIFFE IDs from mTLS client certificates
+		// and stores them in the request context for downstream handlers.
+		// When no client cert is present (browser flows), the middleware is a no-op.
+		if td := r.embeddedAuthServer.SPIFFETrustDomain(); !td.IsZero() {
+			spiffeMW := authserverspiffe.NewMiddleware(td)
+			for path, handler := range prefixHandlers {
+				prefixHandlers[path] = spiffeMW(handler)
+			}
+			slog.Debug("SPIFFE middleware enabled for auth server endpoints",
+				"trust_domain", td.String(),
+			)
+		}
+
+		transportConfig.PrefixHandlers = prefixHandlers
 	}
 
 	// Create middleware from the MiddlewareConfigs instances in the RunConfig.

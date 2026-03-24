@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
+
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
@@ -79,6 +81,11 @@ type RunConfig struct {
 	// Storage configures the storage backend for the auth server.
 	// If nil, defaults to in-memory storage.
 	Storage *storage.RunConfig `json:"storage,omitempty" yaml:"storage,omitempty"`
+
+	// SPIFFETrustDomain is the expected SPIFFE trust domain for mTLS client authentication.
+	// When set, the SPIFFE middleware validates that client certificates contain a SPIFFE ID
+	// from this trust domain. When empty, SPIFFE-based authentication is disabled.
+	SPIFFETrustDomain string `json:"spiffe_trust_domain,omitempty" yaml:"spiffe_trust_domain,omitempty"`
 }
 
 // SigningKeyRunConfig configures where to load signing keys from.
@@ -365,6 +372,12 @@ type Config struct {
 	// When empty, any request with a "resource" parameter will be rejected with
 	// "invalid_target". Configure this for proper MCP specification compliance.
 	AllowedAudiences []string
+
+	// SPIFFETrustDomain is the expected SPIFFE trust domain for mTLS client authentication.
+	// When set (non-zero value), the SPIFFE middleware validates that client certificates
+	// contain a SPIFFE ID from this trust domain. When zero, SPIFFE-based authentication
+	// is disabled and the middleware is not mounted.
+	SPIFFETrustDomain spiffeid.TrustDomain
 }
 
 // Validate checks that the Config is valid.

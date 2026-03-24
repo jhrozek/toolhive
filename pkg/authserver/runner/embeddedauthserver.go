@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
+
 	"github.com/stacklok/toolhive/pkg/authserver"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
@@ -37,10 +39,11 @@ const (
 // It handles configuration transformation from authserver.RunConfig to authserver.Config,
 // manages resource lifecycle, and provides HTTP handlers for OAuth/OIDC endpoints.
 type EmbeddedAuthServer struct {
-	server      authserver.Server
-	keyProvider keys.KeyProvider
-	closeOnce   sync.Once
-	closeErr    error
+	server            authserver.Server
+	keyProvider       keys.KeyProvider
+	spiffeTrustDomain spiffeid.TrustDomain
+	closeOnce         sync.Once
+	closeErr          error
 }
 
 // NewEmbeddedAuthServer creates an EmbeddedAuthServer from authserver.RunConfig.
@@ -79,7 +82,19 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 		return nil, fmt.Errorf("failed to build upstream configs: %w", err)
 	}
 
-	// 5. Build the resolved Config
+	// 5. Resolve SPIFFE trust domain if configured
+	var spiffeTD spiffeid.TrustDomain
+	if cfg.SPIFFETrustDomain != "" {
+		spiffeTD, err = spiffeid.TrustDomainFromString(cfg.SPIFFETrustDomain)
+		if err != nil {
+			return nil, fmt.Errorf("invalid SPIFFE trust domain %q: %w", cfg.SPIFFETrustDomain, err)
+		}
+		slog.Debug("SPIFFE trust domain configured for auth server",
+			"trust_domain", spiffeTD.String(),
+		)
+	}
+
+	// 6. Build the resolved Config
 	resolvedCfg := authserver.Config{
 		Issuer:                       cfg.Issuer,
 		AuthorizationEndpointBaseURL: cfg.AuthorizationEndpointBaseURL,
@@ -91,23 +106,25 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 		Upstreams:                    upstreams,
 		ScopesSupported:              cfg.ScopesSupported,
 		AllowedAudiences:             cfg.AllowedAudiences,
+		SPIFFETrustDomain:            spiffeTD,
 	}
 
-	// 6. Create storage backend based on configuration
+	// 7. Create storage backend based on configuration
 	stor, err := createStorage(ctx, cfg.Storage)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create storage: %w", err)
 	}
 
-	// 7. Create the auth server
+	// 8. Create the auth server
 	server, err := authserver.New(ctx, resolvedCfg, stor)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create auth server: %w", err)
 	}
 
 	return &EmbeddedAuthServer{
-		server:      server,
-		keyProvider: keyProvider,
+		server:            server,
+		keyProvider:       keyProvider,
+		spiffeTrustDomain: spiffeTD,
 	}, nil
 }
 
@@ -149,6 +166,12 @@ func (e *EmbeddedAuthServer) UpstreamTokenRefresher() storage.UpstreamTokenRefre
 // self-referential HTTP calls when the token validator runs in the same process.
 func (e *EmbeddedAuthServer) KeyProvider() keys.KeyProvider {
 	return e.keyProvider
+}
+
+// SPIFFETrustDomain returns the configured SPIFFE trust domain.
+// Returns the zero value if SPIFFE-based authentication is not configured.
+func (e *EmbeddedAuthServer) SPIFFETrustDomain() spiffeid.TrustDomain {
+	return e.spiffeTrustDomain
 }
 
 // Routes returns the authorization server's HTTP route map.
