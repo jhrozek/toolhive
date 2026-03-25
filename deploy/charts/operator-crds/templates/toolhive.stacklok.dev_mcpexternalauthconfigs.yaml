@@ -256,6 +256,49 @@ spec:
                     maxItems: 5
                     type: array
                     x-kubernetes-list-type: atomic
+                  spiffeClientPolicy:
+                    description: |-
+                      SPIFFEClientPolicy controls which SPIFFE IDs are allowed to auto-register
+                      as OAuth clients. When nil, all SPIFFE IDs in the trust domain are allowed.
+                    properties:
+                      allowedIdentities:
+                        description: AllowedIdentities lists namespace/service-account
+                          patterns permitted to register.
+                        items:
+                          description: |-
+                            SPIFFEAllowedIdentity matches SPIFFE IDs by Kubernetes namespace and service account.
+                            Use "*" for either field to match any value.
+                          properties:
+                            namespace:
+                              description: Namespace is the Kubernetes namespace.
+                                Use "*" for any namespace.
+                              minLength: 1
+                              type: string
+                            serviceAccount:
+                              description: ServiceAccount is the Kubernetes service
+                                account. Use "*" for any.
+                              minLength: 1
+                              type: string
+                          required:
+                          - namespace
+                          - serviceAccount
+                          type: object
+                        minItems: 1
+                        type: array
+                      maxRegistrations:
+                        description: MaxRegistrations caps the total number of auto-registered
+                          clients. 0 means unlimited.
+                        format: int32
+                        type: integer
+                    required:
+                    - allowedIdentities
+                    type: object
+                  spiffeTrustDomain:
+                    description: |-
+                      SPIFFETrustDomain is the SPIFFE trust domain for mTLS client authentication.
+                      When set, the embedded auth server validates that client certificates contain
+                      a SPIFFE ID from this trust domain.
+                    type: string
                   storage:
                     description: |-
                       Storage configures the storage backend for the embedded auth server.
@@ -431,6 +474,58 @@ spec:
                         - memory
                         - redis
                         type: string
+                    type: object
+                  tls:
+                    description: |-
+                      TLS configures TLS for the proxy listener. When set, the proxy serves HTTPS
+                      using the referenced certificate and key. Required for mTLS with SPIFFE clients.
+                    properties:
+                      certSecretRef:
+                        description: CertSecretRef references a Secret containing
+                          the TLS serving certificate (PEM).
+                        properties:
+                          key:
+                            description: Key is the key within the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      clientCASecretRef:
+                        description: |-
+                          ClientCASecretRef references a Secret containing the CA certificate for
+                          verifying client certificates (PEM). When set, enables mTLS with VerifyClientCertIfGiven.
+                        properties:
+                          key:
+                            description: Key is the key within the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      keySecretRef:
+                        description: KeySecretRef references a Secret containing the
+                          TLS private key (PEM).
+                        properties:
+                          key:
+                            description: Key is the key within the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                    required:
+                    - certSecretRef
+                    - keySecretRef
                     type: object
                   tokenLifespans:
                     description: |-
