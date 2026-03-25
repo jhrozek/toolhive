@@ -100,7 +100,7 @@ get_token() {
     agent_curl "${pod}" "${ns}" \
         -X POST \
         -H "Content-Type: application/x-www-form-urlencoded" \
-        -d "grant_type=client_credentials&client_id=${spiffe_id}" \
+        -d "grant_type=client_credentials&client_id=${spiffe_id}&resource=${proxy_url}" \
         "${proxy_url}/oauth/token"
 }
 

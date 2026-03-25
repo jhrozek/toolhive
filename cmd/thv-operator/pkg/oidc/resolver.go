@@ -343,9 +343,31 @@ func (*resolver) resolveInlineConfig(
 		return nil, err
 	}
 
+	// Don't embed ClientSecret in the config if ClientSecretRef is set
+	// The secret will be injected via environment variable instead
+	clientSecret := config.ClientSecret
+	if config.ClientSecretRef != nil {
+		clientSecret = ""
+	}
+
+	// Compute ThvCABundlePath: use explicit value if set, otherwise auto-compute from CABundleRef
+	//nolint:staticcheck // SA1019: ThvCABundlePath is deprecated but still supported for backwards compatibility
+	thvCABundlePath := config.ThvCABundlePath
+	if thvCABundlePath == "" {
+		thvCABundlePath = computeCABundlePath(config.CABundleRef)
+	}
+
+	// Default audience to resourceURL when not explicitly set.
+	// This ensures the OIDC middleware validates that tokens are intended
+	// for this specific server, preventing token replay across services.
+	audience := config.Audience
+	if audience == "" && resourceURL != "" {
+		audience = resourceURL
+	}
+
 	return &OIDCConfig{
 		Issuer:             config.Issuer,
-		Audience:           config.Audience,
+		Audience:           audience,
 		JWKSURL:            config.JWKSURL,
 		IntrospectionURL:   config.IntrospectionURL,
 		ClientID:           config.ClientID,
