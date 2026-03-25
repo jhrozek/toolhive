@@ -18,11 +18,15 @@ spec:
   transport: streamable-http
   oidcConfig:
     type: inline
-    resourceUrl: "https://cluster-tools.toolhive-system.svc.cluster.local:8443"
+    resourceUrl: "https://mcp-cluster-tools-proxy.toolhive-system.svc.cluster.local:8080"
     inline:
-      issuer: "https://cluster-tools.toolhive-system.svc.cluster.local:8443"
+      issuer: "https://mcp-cluster-tools-proxy.toolhive-system.svc.cluster.local:8080"
       jwksAllowPrivateIP: true
       insecureAllowHTTP: false
+      caBundleRef:
+        configMapRef:
+          name: spiffe-ca-bundle
+          key: ca.crt
   externalAuthConfigRef:
     name: spiffe-auth-cluster-tools
   authzConfig:

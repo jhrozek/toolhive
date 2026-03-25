@@ -23,7 +23,7 @@ metadata:
 spec:
   type: embeddedAuthServer
   embeddedAuthServer:
-    issuer: "https://fetch.toolhive-system.svc.cluster.local:8443"
+    issuer: "https://mcp-fetch-proxy.toolhive-system.svc.cluster.local:8080"
     spiffeTrustDomain: "toolhive.dev"
     spiffeClientPolicy:
       allowedIdentities:
@@ -44,9 +44,9 @@ spec:
       - name: spiffe-placeholder
         type: oauth2
         oauth2Config:
-          authorizationEndpoint: "https://fetch.toolhive-system.svc.cluster.local:8443/oauth/authorize"
-          tokenEndpoint: "https://fetch.toolhive-system.svc.cluster.local:8443/oauth/token"
+          authorizationEndpoint: "https://mcp-fetch-proxy.toolhive-system.svc.cluster.local:8080/oauth/authorize"
+          tokenEndpoint: "https://mcp-fetch-proxy.toolhive-system.svc.cluster.local:8080/oauth/token"
           clientId: "spiffe-poc"
-          redirectUri: "https://fetch.toolhive-system.svc.cluster.local:8443/oauth/callback"
+          redirectUri: "https://mcp-fetch-proxy.toolhive-system.svc.cluster.local:8080/oauth/callback"
           userInfo:
-            endpointUrl: "https://fetch.toolhive-system.svc.cluster.local:8443/oauth/userinfo"
+            endpointUrl: "https://mcp-fetch-proxy.toolhive-system.svc.cluster.local:8080/oauth/userinfo"

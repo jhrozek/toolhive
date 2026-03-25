@@ -23,11 +23,15 @@ spec:
   transport: streamable-http
   oidcConfig:
     type: inline
-    resourceUrl: "https://fetch.toolhive-system.svc.cluster.local:8443"
+    resourceUrl: "https://mcp-fetch-proxy.toolhive-system.svc.cluster.local:8080"
     inline:
-      issuer: "https://fetch.toolhive-system.svc.cluster.local:8443"
+      issuer: "https://mcp-fetch-proxy.toolhive-system.svc.cluster.local:8080"
       jwksAllowPrivateIP: true
       insecureAllowHTTP: false
+      caBundleRef:
+        configMapRef:
+          name: spiffe-ca-bundle
+          key: ca.crt
   externalAuthConfigRef:
     name: spiffe-auth-fetch
   authzConfig:
