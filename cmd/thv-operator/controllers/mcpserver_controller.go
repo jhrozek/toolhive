@@ -1222,6 +1222,15 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		env = append(env, authServerEnvVars...)
 	}
 
+	// Determine probe scheme: HTTPS if proxy TLS is configured, HTTP otherwise.
+	probeScheme := corev1.URISchemeHTTP
+	for _, v := range volumes {
+		if v.Name == ctrlutil.ProxyTLSCertVolumeName {
+			probeScheme = corev1.URISchemeHTTPS
+			break
+		}
+	}
+
 	// Prepare container resources
 	resources := corev1.ResourceRequirements{}
 	if m.Spec.Resources.Limits.CPU != "" || m.Spec.Resources.Limits.Memory != "" {
@@ -1335,8 +1344,9 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 						LivenessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
 								HTTPGet: &corev1.HTTPGetAction{
-									Path: "/health",
-									Port: intstr.FromString("http"),
+									Path:   "/health",
+									Port:   intstr.FromString("http"),
+									Scheme: probeScheme,
 								},
 							},
 							InitialDelaySeconds: 30,
@@ -1347,8 +1357,9 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 						ReadinessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
 								HTTPGet: &corev1.HTTPGetAction{
-									Path: "/health",
-									Port: intstr.FromString("http"),
+									Path:   "/health",
+									Port:   intstr.FromString("http"),
+									Scheme: probeScheme,
 								},
 							},
 							InitialDelaySeconds: 5,

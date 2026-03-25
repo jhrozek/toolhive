@@ -1,0 +1,60 @@
+# SPDX-License-Identifier: Apache-2.0
+# TLS certificates for the MCP server proxy listeners.
+# cert-manager issues these from the SPIFFE CA (spiffe-ca-issuer) so the CA that
+# signs the server cert is the same CA that signs agent SVIDs — enabling mTLS
+# where both sides share the same root of trust.
+# Each Secret will contain: tls.crt, tls.key, ca.crt (the SPIFFE root CA).
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: fetch-tls
+  namespace: toolhive-system
+spec:
+  secretName: fetch-tls-secret
+  duration: 8760h
+  renewBefore: 720h
+  commonName: fetch.toolhive-system.svc.cluster.local
+  dnsNames:
+    - fetch
+    - fetch.toolhive-system.svc
+    - fetch.toolhive-system.svc.cluster.local
+    - mcp-fetch-proxy
+    - mcp-fetch-proxy.toolhive-system.svc
+    - mcp-fetch-proxy.toolhive-system.svc.cluster.local
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  usages:
+    - server auth
+  issuerRef:
+    name: spiffe-ca-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: cluster-tools-tls
+  namespace: toolhive-system
+spec:
+  secretName: cluster-tools-tls-secret
+  duration: 8760h
+  renewBefore: 720h
+  commonName: cluster-tools.toolhive-system.svc.cluster.local
+  dnsNames:
+    - cluster-tools
+    - cluster-tools.toolhive-system.svc
+    - cluster-tools.toolhive-system.svc.cluster.local
+    - mcp-cluster-tools-proxy
+    - mcp-cluster-tools-proxy.toolhive-system.svc
+    - mcp-cluster-tools-proxy.toolhive-system.svc.cluster.local
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  usages:
+    - server auth
+  issuerRef:
+    name: spiffe-ca-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io

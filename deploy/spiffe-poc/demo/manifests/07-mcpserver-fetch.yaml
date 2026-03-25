@@ -1,0 +1,66 @@
+# SPDX-License-Identifier: Apache-2.0
+# MCPServer for the gofetch server (fetch arbitrary URLs).
+#
+# oidcConfig.resourceUrl is required by the operator when embeddedAuthServer is used
+# (sets the AllowedAudiences for issued JWTs per RFC 8707).
+# It matches the HTTPS URL clients use to reach this MCP server proxy.
+#
+# Cedar authorization policy:
+#   - devops-agent: can call ANY tool and list tools
+#   - intern-agent: can only call fetch_url and list tools
+#   - rogue-agent (untrusted ns): denied at registration; never gets a JWT
+#
+# The SPIFFE ID injected as claim_sub has the form:
+#   spiffe://toolhive.dev/ns/<namespace>/sa/<service-account>
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: fetch
+  namespace: toolhive-system
+spec:
+  image: ghcr.io/stackloklabs/gofetch/server:1.0.1
+  transport: streamable-http
+  oidcConfig:
+    type: inline
+    resourceUrl: "https://fetch.toolhive-system.svc.cluster.local:8443"
+    inline:
+      issuer: "https://fetch.toolhive-system.svc.cluster.local:8443"
+      jwksAllowPrivateIP: true
+      insecureAllowHTTP: false
+  externalAuthConfigRef:
+    name: spiffe-auth-fetch
+  authzConfig:
+    type: inline
+    inline:
+      policies:
+        - |
+          // devops-agent: full access to all tools
+          permit(
+            principal,
+            action == Action::"call_tool",
+            resource
+          )
+          when {
+            principal.claim_sub like "spiffe://toolhive.dev/ns/agents/sa/devops-*"
+          };
+        - |
+          // intern-agent: restricted to fetch_url only
+          permit(
+            principal,
+            action == Action::"call_tool",
+            resource == Tool::"fetch_url"
+          )
+          when {
+            principal.claim_sub like "spiffe://toolhive.dev/ns/agents/sa/intern-*"
+          };
+        - |
+          // agents namespace: all principals may list tools
+          permit(
+            principal,
+            action == Action::"list_tools",
+            resource
+          )
+          when {
+            principal.claim_sub like "spiffe://toolhive.dev/ns/agents/*"
+          };

@@ -1,0 +1,85 @@
+# SPDX-License-Identifier: Apache-2.0
+# Demo agent pods. Each pod has a SPIFFE CSI volume mounted at /var/run/secrets/spiffe.io/
+# providing an auto-rotated SVID certificate and private key that the agent can present
+# for mTLS when registering with the embedded auth server.
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: devops-agent
+  namespace: agents
+  labels:
+    app: devops-agent
+spec:
+  serviceAccountName: devops-agent
+  containers:
+    - name: agent
+      image: curlimages/curl:latest
+      command: ["sleep", "infinity"]
+      securityContext:
+        runAsUser: 0
+      volumeMounts:
+        - name: spiffe-certs
+          mountPath: /var/run/secrets/spiffe.io
+          readOnly: true
+  volumes:
+    - name: spiffe-certs
+      csi:
+        driver: spiffe.csi.cert-manager.io
+        readOnly: true
+        volumeAttributes:
+          spiffe.csi.cert-manager.io/certificate-duration: "1h"
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: intern-agent
+  namespace: agents
+  labels:
+    app: intern-agent
+spec:
+  serviceAccountName: intern-agent
+  containers:
+    - name: agent
+      image: curlimages/curl:latest
+      command: ["sleep", "infinity"]
+      securityContext:
+        runAsUser: 0
+      volumeMounts:
+        - name: spiffe-certs
+          mountPath: /var/run/secrets/spiffe.io
+          readOnly: true
+  volumes:
+    - name: spiffe-certs
+      csi:
+        driver: spiffe.csi.cert-manager.io
+        readOnly: true
+        volumeAttributes:
+          spiffe.csi.cert-manager.io/certificate-duration: "1h"
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rogue-agent
+  namespace: untrusted
+  labels:
+    app: rogue-agent
+spec:
+  serviceAccountName: rogue-agent
+  containers:
+    - name: agent
+      image: curlimages/curl:latest
+      command: ["sleep", "infinity"]
+      securityContext:
+        runAsUser: 0
+      volumeMounts:
+        - name: spiffe-certs
+          mountPath: /var/run/secrets/spiffe.io
+          readOnly: true
+  volumes:
+    - name: spiffe-certs
+      csi:
+        driver: spiffe.csi.cert-manager.io
+        readOnly: true
+        volumeAttributes:
+          spiffe.csi.cert-manager.io/certificate-duration: "1h"

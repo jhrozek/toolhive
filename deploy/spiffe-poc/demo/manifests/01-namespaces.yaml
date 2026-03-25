@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: Apache-2.0
+# Namespaces for the SPIFFE PoC demo.
+# - agents: trusted workloads that hold valid SPIFFE SVIDs
+# - untrusted: workloads outside the allowed trust boundary
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agents
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: untrusted
