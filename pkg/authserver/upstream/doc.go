@@ -17,20 +17,23 @@
 //
 // # Architecture
 //
-// The package is designed around a core OAuth2Provider interface that abstracts
-// upstream IDP operations. The interface captures essential OAuth/OIDC
-// operations without leaking implementation details:
+// The package is designed around a base IdentityProvider interface with two
+// specialized sub-interfaces for different authentication ceremonies:
 //
-//   - Type: Returns the provider type identifier
-//   - AuthorizationURL: Build redirect URL for user authentication
-//   - ExchangeCodeForIdentity: Exchange authorization code and resolve identity atomically
-//   - RefreshTokens: Refresh expired tokens (with subject validation for OIDC)
+//   - IdentityProvider: Base interface (Type method only)
+//   - RedirectFlowProvider: Browser-redirect ceremony (AuthorizationURL, ExchangeCodeForIdentity, RefreshTokens)
+//   - DirectAssertionProvider: Direct assertion ceremony (ResolveIdentity from request context)
+//
+// OAuth2Provider is a type alias for RedirectFlowProvider for backward compatibility.
 //
 // # Type Hierarchy
 //
-//	OAuth2Provider (interface)
-//	    ├── BaseOAuth2Provider (concrete - pure OAuth 2.0, uses userinfo endpoint for identity)
-//	    └── OIDCProviderImpl (concrete - OIDC with discovery, validates ID tokens for identity)
+//	IdentityProvider (interface)
+//	    ├── RedirectFlowProvider (interface - browser redirect flows)
+//	    │       ├── BaseOAuth2Provider (concrete - pure OAuth 2.0, uses userinfo endpoint for identity)
+//	    │       └── OIDCProviderImpl (concrete - OIDC with discovery, validates ID tokens for identity)
+//	    └── DirectAssertionProvider (interface - direct assertion flows)
+//	            └── SPIFFEProvider (concrete - mTLS with SPIFFE ID from X.509-SVID)
 //
 // # Value Objects
 //
@@ -69,7 +72,9 @@
 //
 // # Extensibility
 //
-// To add a new IDP type (e.g., SAML), implement the OAuth2Provider interface.
+// To add a new IDP type, implement the appropriate sub-interface:
+//   - RedirectFlowProvider for browser-based authentication (e.g., SAML)
+//   - DirectAssertionProvider for direct identity assertion (e.g., mTLS, workload identity)
 //
 // # UserInfo Extensibility
 //

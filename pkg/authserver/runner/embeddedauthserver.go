@@ -19,6 +19,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
+	"github.com/stacklok/toolhive/pkg/authserver/spiffe"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
@@ -94,6 +95,16 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 		)
 	}
 
+	// 5b. Convert SPIFFE client policy if configured
+	var spiffeClientPolicy *spiffe.ClientPolicy
+	if cfg.SPIFFEClientPolicy != nil {
+		spiffeClientPolicy = convertSPIFFEClientPolicy(cfg.SPIFFEClientPolicy)
+		slog.Debug("SPIFFE client registration policy configured",
+			"allowed_identities", len(spiffeClientPolicy.AllowedIdentities),
+			"max_registrations", spiffeClientPolicy.MaxRegistrations,
+		)
+	}
+
 	// 6. Build the resolved Config
 	resolvedCfg := authserver.Config{
 		Issuer:                       cfg.Issuer,
@@ -107,6 +118,7 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 		ScopesSupported:              cfg.ScopesSupported,
 		AllowedAudiences:             cfg.AllowedAudiences,
 		SPIFFETrustDomain:            spiffeTD,
+		SPIFFEClientPolicy:           spiffeClientPolicy,
 	}
 
 	// 7. Create storage backend based on configuration
@@ -334,6 +346,17 @@ func buildUpstreamConfig(rc *authserver.UpstreamRunConfig) (*authserver.Upstream
 			OAuth2Config: oauth2Cfg,
 		}, nil
 
+	case authserver.UpstreamProviderTypeSPIFFE:
+		td, err := spiffeid.TrustDomainFromString(rc.SPIFFETrustDomain)
+		if err != nil {
+			return nil, fmt.Errorf("invalid SPIFFE trust domain %q: %w", rc.SPIFFETrustDomain, err)
+		}
+		return &authserver.UpstreamConfig{
+			Name:              rc.Name,
+			Type:              authserver.UpstreamProviderTypeSPIFFE,
+			SPIFFETrustDomain: td,
+		}, nil
+
 	default:
 		return nil, fmt.Errorf("unsupported upstream type: %s", rc.Type)
 	}
@@ -466,6 +489,21 @@ func convertFieldMapping(rc *authserver.UserInfoFieldMappingRunConfig) *upstream
 		SubjectFields: rc.SubjectFields,
 		NameFields:    rc.NameFields,
 		EmailFields:   rc.EmailFields,
+	}
+}
+
+// convertSPIFFEClientPolicy converts a SPIFFEClientPolicyRunConfig to the runtime ClientPolicy type.
+func convertSPIFFEClientPolicy(rc *authserver.SPIFFEClientPolicyRunConfig) *spiffe.ClientPolicy {
+	identities := make([]spiffe.AllowedIdentity, len(rc.AllowedIdentities))
+	for i, ai := range rc.AllowedIdentities {
+		identities[i] = spiffe.AllowedIdentity{
+			Namespace:      ai.Namespace,
+			ServiceAccount: ai.ServiceAccount,
+		}
+	}
+	return &spiffe.ClientPolicy{
+		AllowedIdentities: identities,
+		MaxRegistrations:  rc.MaxRegistrations,
 	}
 }
 

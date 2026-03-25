@@ -146,7 +146,7 @@ func TestNewServer_Success(t *testing.T) {
 
 	// Create mocks
 	mockStorage := storagemocks.NewMockStorage(ctrl)
-	mockUpstream := upstreammocks.NewMockOAuth2Provider(ctrl)
+	mockUpstream := upstreammocks.NewMockRedirectFlowProvider(ctrl)
 
 	// Create valid config
 	cfg := Config{
@@ -158,7 +158,7 @@ func TestNewServer_Success(t *testing.T) {
 	}
 
 	// Create factory that returns our mock
-	mockFactory := func(_ context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
+	mockFactory := func(_ context.Context, _ *UpstreamConfig) (upstream.IdentityProvider, error) {
 		return mockUpstream, nil
 	}
 

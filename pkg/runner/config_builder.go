@@ -1239,3 +1239,11 @@ func WithEmbeddedAuthServerConfig(config *authserver.RunConfig) RunConfigBuilder
 		return nil
 	}
 }
+
+// WithTLSConfig sets the TLS configuration for the proxy listener.
+func WithTLSConfig(cfg *TLSConfig) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.TLSConfig = cfg
+		return nil
+	}
+}

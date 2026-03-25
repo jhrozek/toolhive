@@ -232,6 +232,64 @@ type EmbeddedAuthServerConfig struct {
 
 	// ScopesSupported is the list of OAuth 2.0 scopes that this authorization server supports.
 	// For an embedded auth server, this can be derived from the server's (MCP or vMCP) OIDC configuration.
+
+	// SPIFFETrustDomain is the SPIFFE trust domain for mTLS client authentication.
+	// When set, the embedded auth server validates that client certificates contain
+	// a SPIFFE ID from this trust domain.
+	// +optional
+	SPIFFETrustDomain string `json:"spiffeTrustDomain,omitempty"`
+
+	// SPIFFEClientPolicy controls which SPIFFE IDs are allowed to auto-register
+	// as OAuth clients. When nil, all SPIFFE IDs in the trust domain are allowed.
+	// +optional
+	SPIFFEClientPolicy *SPIFFEClientPolicyConfig `json:"spiffeClientPolicy,omitempty"`
+
+	// TLS configures TLS for the proxy listener. When set, the proxy serves HTTPS
+	// using the referenced certificate and key. Required for mTLS with SPIFFE clients.
+	// +optional
+	TLS *ProxyTLSConfig `json:"tls,omitempty"`
+}
+
+// ProxyTLSConfig configures TLS for the proxy listener.
+type ProxyTLSConfig struct {
+	// CertSecretRef references a Secret containing the TLS serving certificate (PEM).
+	// +kubebuilder:validation:Required
+	CertSecretRef SecretKeyRef `json:"certSecretRef"`
+
+	// KeySecretRef references a Secret containing the TLS private key (PEM).
+	// +kubebuilder:validation:Required
+	KeySecretRef SecretKeyRef `json:"keySecretRef"`
+
+	// ClientCASecretRef references a Secret containing the CA certificate for
+	// verifying client certificates (PEM). When set, enables mTLS with VerifyClientCertIfGiven.
+	// +optional
+	ClientCASecretRef *SecretKeyRef `json:"clientCASecretRef,omitempty"`
+}
+
+// SPIFFEClientPolicyConfig controls which SPIFFE identities can auto-register as OAuth clients.
+type SPIFFEClientPolicyConfig struct {
+	// AllowedIdentities lists namespace/service-account patterns permitted to register.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	AllowedIdentities []SPIFFEAllowedIdentity `json:"allowedIdentities"`
+
+	// MaxRegistrations caps the total number of auto-registered clients. 0 means unlimited.
+	// +optional
+	MaxRegistrations int32 `json:"maxRegistrations,omitempty"`
+}
+
+// SPIFFEAllowedIdentity matches SPIFFE IDs by Kubernetes namespace and service account.
+// Use "*" for either field to match any value.
+type SPIFFEAllowedIdentity struct {
+	// Namespace is the Kubernetes namespace. Use "*" for any namespace.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Namespace string `json:"namespace"`
+
+	// ServiceAccount is the Kubernetes service account. Use "*" for any.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	ServiceAccount string `json:"serviceAccount"`
 }
 
 // TokenLifespanConfig holds configuration for token lifetimes.
@@ -843,17 +901,13 @@ func (r *MCPExternalAuthConfig) validateTypeConfigConsistency() error {
 // validateEmbeddedAuthServer validates embeddedAuthServer type configuration.
 // This performs complex business logic validation that CEL cannot express.
 func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
-	// Validate upstream providers
 	cfg := r.Spec.EmbeddedAuthServer
 	if cfg == nil {
 		return nil
 	}
 
-	// Note: MinItems=1 is enforced by kubebuilder markers,
-	// but we add runtime validation for clarity and future-proofing
-	if len(cfg.UpstreamProviders) == 0 {
-		return fmt.Errorf("at least one upstream provider is required")
-	}
+	// Upstream providers are optional for SPIFFE-only mode (client_credentials
+	// grant only, no human login flows). When present, validate them.
 	// Note: multi-upstream is accepted at the CRD level. Consumer controllers
 	// (MCPServer, MCPRemoteProxy) enforce single-upstream restrictions;
 	// VirtualMCPServer allows multiple upstreams.
@@ -868,6 +922,16 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 		if err := r.validateUpstreamProvider(i, &provider); err != nil {
 			return err
 		}
+	}
+
+	// SPIFFE cross-field validation: trust domain requires TLS (mTLS needs a TLS listener)
+	if cfg.SPIFFETrustDomain != "" && cfg.TLS == nil {
+		return fmt.Errorf("tls must be configured when spiffeTrustDomain is set (SPIFFE requires mTLS)")
+	}
+
+	// SPIFFE client policy only makes sense with a trust domain
+	if cfg.SPIFFEClientPolicy != nil && cfg.SPIFFETrustDomain == "" {
+		return fmt.Errorf("spiffeTrustDomain must be set when spiffeClientPolicy is configured")
 	}
 
 	return nil

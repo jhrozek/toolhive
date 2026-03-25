@@ -140,6 +140,7 @@ func TestNextMissingUpstream_StorageError(t *testing.T) {
 			{Name: "provider-1", Provider: mockUpstream1},
 			{Name: "provider-2", Provider: mockUpstream2},
 		},
+		nil,
 	)
 	require.NoError(t, err)
 

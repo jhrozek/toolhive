@@ -87,7 +87,7 @@ func testSetupWithOptions(t *testing.T, opts testSetupOptions) *Handler {
 	// Use a dummy upstream for basic handler tests that don't need IDP functionality
 	dummyUpstream := &mockIDPProvider{}
 	handler, err := NewHandler(provider, oauth2Config, stor,
-		[]NamedUpstream{{Name: "default", Provider: dummyUpstream}})
+		[]NamedUpstream{{Name: "default", Provider: dummyUpstream}}, nil)
 	require.NoError(t, err)
 
 	return handler
@@ -143,7 +143,7 @@ func TestJWKSHandler_NilJWKS(t *testing.T) {
 	provider := fosite.NewOAuth2Provider(stor, cfg.Config)
 	dummyUpstream := &mockIDPProvider{}
 	handler, err := NewHandler(provider, cfg, stor,
-		[]NamedUpstream{{Name: "default", Provider: dummyUpstream}})
+		[]NamedUpstream{{Name: "default", Provider: dummyUpstream}}, nil)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)

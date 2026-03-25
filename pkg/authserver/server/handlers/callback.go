@@ -76,9 +76,11 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	// Look up the upstream provider that was used for this authorization leg.
 	// Validating against pending.UpstreamProviderName (set during authorize) provides
 	// IDP mix-up defense: we only accept callbacks for the provider we redirected to.
-	upstreamProvider, ok := h.upstreamByName(pending.UpstreamProviderName)
-	if !ok {
-		slog.Error("upstream provider not found", "provider", pending.UpstreamProviderName)
+	// The callback flow requires a redirect-flow provider (the one we redirected to).
+	upstreamProvider, rfpErr := h.redirectProviderByName(pending.UpstreamProviderName)
+	if rfpErr != nil {
+		slog.Error("upstream provider not found or not a redirect provider",
+			"provider", pending.UpstreamProviderName, "error", rfpErr)
 		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("upstream provider not configured"))
 		return
 	}
@@ -392,14 +394,16 @@ func (h *Handler) continueChainOrComplete(
 		return
 	}
 
-	// Build authorization URL for next upstream
+	// Build authorization URL for next upstream.
+	// The next provider in the chain must support redirect flows.
 	var authOpts []upstream.AuthorizationOption
 	if secrets.Nonce != "" {
 		authOpts = append(authOpts, upstream.WithAdditionalParams(map[string]string{"nonce": secrets.Nonce}))
 	}
-	nextUpstream, ok := h.upstreamByName(nextProvider)
-	if !ok {
-		slog.Error("next upstream provider not found", "provider", nextProvider)
+	nextUpstream, rfpErr := h.redirectProviderByName(nextProvider)
+	if rfpErr != nil {
+		slog.Error("next upstream provider not found or not a redirect provider",
+			"provider", nextProvider, "error", rfpErr)
 		_ = h.storage.DeletePendingAuthorization(ctx, secrets.State)
 		_ = h.storage.DeleteUpstreamTokens(ctx, sessionID)
 		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("upstream provider configuration error"))

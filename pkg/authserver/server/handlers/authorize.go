@@ -66,6 +66,15 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// The first upstream must support redirect flows (browser-based auth).
+	// Direct-assertion providers (SPIFFE) do not participate in the authorize redirect chain.
+	firstRedirect, err := h.redirectProviderByName(h.upstreams[0].Name)
+	if err != nil {
+		slog.Error("first upstream does not support redirect flows", "error", err)
+		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("upstream provider does not support browser authentication"))
+		return
+	}
+
 	slog.Debug("parsed client-requested scopes", //nolint:gosec // G706: scope count is an integer
 		"scope_count", len(scopes),
 	)
@@ -106,7 +115,7 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 	if secrets.Nonce != "" {
 		authOpts = append(authOpts, upstream.WithAdditionalParams(map[string]string{"nonce": secrets.Nonce}))
 	}
-	upstreamURL, err := h.upstreams[0].Provider.AuthorizationURL(secrets.State, secrets.PKCEChallenge, authOpts...)
+	upstreamURL, err := firstRedirect.AuthorizationURL(secrets.State, secrets.PKCEChallenge, authOpts...)
 	if err != nil {
 		slog.Error("failed to build upstream authorization URL",
 			"error", err,

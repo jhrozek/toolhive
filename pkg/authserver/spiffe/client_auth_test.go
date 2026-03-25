@@ -77,7 +77,7 @@ func TestClientAuthPreHandler_SPIFFEWithMatchingClientID(t *testing.T) {
 	scopes := []string{"openid", "mcp:tools"}
 	audiences := []string{"https://api.example.com"}
 
-	handler := ClientAuthPreHandler(stor, scopes, audiences, next.handler())
+	handler := ClientAuthPreHandler(stor, scopes, audiences, nil, next.handler())
 
 	body := strings.NewReader("grant_type=client_credentials&client_id=" + testSPIFFEID)
 	req := httptest.NewRequest(http.MethodPost, "/oauth/token", body)
@@ -106,7 +106,7 @@ func TestClientAuthPreHandler_SPIFFEMismatchedClientID(t *testing.T) {
 	stor := newStubStorage()
 	next := &assertNextCalled{}
 
-	handler := ClientAuthPreHandler(stor, nil, nil, next.handler())
+	handler := ClientAuthPreHandler(stor, nil, nil, nil, next.handler())
 
 	body := strings.NewReader("grant_type=client_credentials&client_id=spiffe://evil.com/attacker")
 	req := httptest.NewRequest(http.MethodPost, "/oauth/token", body)
@@ -134,7 +134,7 @@ func TestClientAuthPreHandler_SPIFFEMissingClientID(t *testing.T) {
 	scopes := []string{"openid"}
 	audiences := []string{"https://api.example.com"}
 
-	handler := ClientAuthPreHandler(stor, scopes, audiences, next.handler())
+	handler := ClientAuthPreHandler(stor, scopes, audiences, nil, next.handler())
 
 	// No client_id in the form body — pre-handler should use SPIFFE ID
 	body := strings.NewReader("grant_type=client_credentials")
@@ -156,7 +156,7 @@ func TestClientAuthPreHandler_NoSPIFFEID(t *testing.T) {
 	stor := newStubStorage()
 	next := &assertNextCalled{}
 
-	handler := ClientAuthPreHandler(stor, nil, nil, next.handler())
+	handler := ClientAuthPreHandler(stor, nil, nil, nil, next.handler())
 
 	// Normal browser OAuth flow — no SPIFFE ID in context
 	body := strings.NewReader("grant_type=authorization_code&code=some-code")
@@ -181,7 +181,7 @@ func TestClientAuthPreHandler_AlreadyRegisteredClient(t *testing.T) {
 	}
 
 	next := &assertNextCalled{}
-	handler := ClientAuthPreHandler(stor, nil, nil, next.handler())
+	handler := ClientAuthPreHandler(stor, nil, nil, nil, next.handler())
 
 	body := strings.NewReader("grant_type=client_credentials&client_id=" + testSPIFFEID)
 	req := httptest.NewRequest(http.MethodPost, "/oauth/token", body)
@@ -207,7 +207,7 @@ func TestClientAuthPreHandler_ConcurrentRegistration(t *testing.T) {
 	stor.registerErr = storage.ErrAlreadyExists
 
 	next := &assertNextCalled{}
-	handler := ClientAuthPreHandler(stor, []string{"openid"}, []string{"https://api.example.com"}, next.handler())
+	handler := ClientAuthPreHandler(stor, []string{"openid"}, []string{"https://api.example.com"}, nil, next.handler())
 
 	body := strings.NewReader("grant_type=client_credentials&client_id=" + testSPIFFEID)
 	req := httptest.NewRequest(http.MethodPost, "/oauth/token", body)

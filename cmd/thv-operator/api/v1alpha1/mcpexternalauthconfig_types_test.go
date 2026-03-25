@@ -389,7 +389,7 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 			expectErr: false,
 		},
 		{
-			name: "empty providers array - invalid",
+			name: "empty providers array - valid for SPIFFE-only mode",
 			config: &MCPExternalAuthConfig{
 				Spec: MCPExternalAuthConfigSpec{
 					Type: ExternalAuthTypeEmbeddedAuthServer,
@@ -399,8 +399,7 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 					},
 				},
 			},
-			expectErr: true,
-			errMsg:    "at least one upstream provider is required",
+			expectErr: false,
 		},
 		{
 			name: "nil embedded auth server config",

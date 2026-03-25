@@ -21,6 +21,11 @@ import (
 // ProviderType identifies the type of upstream Identity Provider.
 type ProviderType string
 
+const (
+	// ProviderTypeSPIFFE is for SPIFFE trust domain providers using mTLS direct assertion.
+	ProviderTypeSPIFFE ProviderType = "spiffe"
+)
+
 // Identity holds the identity resolved from an upstream IDP after
 // exchanging an authorization code. It combines the tokens (for storage and
 // refresh) with the subject identifier (for internal user resolution).

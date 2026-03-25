@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:generate mockgen -destination=mocks/mock_provider.go -package=mocks -source=oauth2.go OAuth2Provider
+//go:generate mockgen -destination=mocks/mock_provider.go -package=mocks -source=oauth2.go RedirectFlowProvider
 
 package upstream
 
@@ -62,11 +62,18 @@ func WithAdditionalParams(params map[string]string) AuthorizationOption {
 	}
 }
 
-// OAuth2Provider handles communication with an upstream Identity Provider.
-// This is the base interface for all provider types.
-type OAuth2Provider interface {
-	// Type returns the provider type.
+// IdentityProvider is the base interface for all upstream identity sources.
+// Every upstream provider (OIDC, OAuth2, SPIFFE, etc.) implements this interface.
+type IdentityProvider interface {
+	// Type returns the provider type identifier.
 	Type() ProviderType
+}
+
+// RedirectFlowProvider is an identity source that uses the browser-redirect
+// authentication ceremony (OAuth 2.0 authorization code flow).
+// Both OIDC and pure OAuth 2.0 providers implement this interface.
+type RedirectFlowProvider interface {
+	IdentityProvider
 
 	// AuthorizationURL builds the URL to redirect the user to the upstream IDP.
 	// state: our internal state to correlate callback
@@ -88,6 +95,22 @@ type OAuth2Provider interface {
 	// ignore it.
 	RefreshTokens(ctx context.Context, refreshToken, expectedSubject string) (*Tokens, error)
 }
+
+// DirectAssertionProvider is an identity source that uses direct assertion
+// (e.g., SPIFFE mTLS) rather than browser redirects. Identity is resolved
+// from the request context without any user interaction.
+type DirectAssertionProvider interface {
+	IdentityProvider
+
+	// ResolveIdentity extracts the upstream identity from the request context.
+	// For SPIFFE, this reads the SPIFFE ID set by the mTLS middleware.
+	ResolveIdentity(ctx context.Context) (*Identity, error)
+}
+
+// OAuth2Provider is a type alias for RedirectFlowProvider.
+// It is kept for backward compatibility; new code should use RedirectFlowProvider
+// or IdentityProvider as appropriate.
+type OAuth2Provider = RedirectFlowProvider
 
 // defaultTokenExpiration is the default token lifetime when expires_in is not specified.
 const defaultTokenExpiration = time.Hour
@@ -230,8 +253,8 @@ func convertOAuth2Token(token *oauth2.Token) (*Tokens, error) {
 	}, nil
 }
 
-// Compile-time interface compliance check.
-var _ OAuth2Provider = (*BaseOAuth2Provider)(nil)
+// Compile-time interface compliance checks.
+var _ RedirectFlowProvider = (*BaseOAuth2Provider)(nil)
 
 // BaseOAuth2Provider implements OAuth 2.0 flows for pure OAuth 2.0 providers.
 // This can be used standalone for OAuth 2.0 providers without OIDC support,

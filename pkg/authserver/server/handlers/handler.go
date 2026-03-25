@@ -28,20 +28,24 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
 
-// NamedUpstream pairs a logical provider name with its OAuth2Provider implementation.
+// NamedUpstream pairs a logical provider name with its IdentityProvider implementation.
 // The name is used as the storage key and must be unique within the upstream slice.
+// The Provider field accepts any IdentityProvider: redirect-flow (OIDC/OAuth2) or
+// direct-assertion (SPIFFE). Handlers type-assert to the specific sub-interface
+// when they need flow-specific methods (e.g., AuthorizationURL, ExchangeCodeForIdentity).
 type NamedUpstream struct {
 	Name     string
-	Provider upstream.OAuth2Provider
+	Provider upstream.IdentityProvider
 }
 
 // Handler provides HTTP handlers for the OAuth authorization server endpoints.
 type Handler struct {
-	provider     fosite.OAuth2Provider
-	config       *server.AuthorizationServerConfig
-	storage      storage.Storage
-	upstreams    []NamedUpstream
-	userResolver *UserResolver
+	provider           fosite.OAuth2Provider
+	config             *server.AuthorizationServerConfig
+	storage            storage.Storage
+	upstreams          []NamedUpstream
+	userResolver       *UserResolver
+	spiffeClientPolicy *spiffe.ClientPolicy
 }
 
 // NewHandler creates a new Handler with the given dependencies.
@@ -49,6 +53,8 @@ type Handler struct {
 // during multi-upstream authorization flows (e.g., sequential token acquisition).
 // upstreams may be empty for SPIFFE-only deployments where only the
 // client_credentials grant is needed (no human login flows).
+// spiffePolicy controls which SPIFFE IDs are allowed to auto-register as OAuth clients.
+// When nil, all SPIFFE IDs are allowed (backward compatible).
 //
 // Returns an error if any upstream entry has an empty name or nil provider.
 func NewHandler(
@@ -56,6 +62,7 @@ func NewHandler(
 	config *server.AuthorizationServerConfig,
 	stor storage.Storage,
 	upstreams []NamedUpstream,
+	spiffePolicy *spiffe.ClientPolicy,
 ) (*Handler, error) {
 	for _, u := range upstreams {
 		if u.Name == "" {
@@ -66,11 +73,12 @@ func NewHandler(
 		}
 	}
 	return &Handler{
-		provider:     provider,
-		config:       config,
-		storage:      stor,
-		upstreams:    upstreams,
-		userResolver: NewUserResolver(stor),
+		provider:           provider,
+		config:             config,
+		storage:            stor,
+		upstreams:          upstreams,
+		userResolver:       NewUserResolver(stor),
+		spiffeClientPolicy: spiffePolicy,
 	}, nil
 }
 
@@ -96,6 +104,7 @@ func (h *Handler) OAuthRoutes(r chi.Router) {
 		h.storage,
 		h.config.ScopesSupported,
 		h.config.AllowedAudiences,
+		h.spiffeClientPolicy,
 		http.HandlerFunc(h.TokenHandler),
 	)
 	r.Post("/oauth/token", tokenHandler.ServeHTTP)
@@ -121,9 +130,11 @@ func (h *Handler) WellKnownRoutes(r chi.Router) {
 	r.Get("/.well-known/openid-configuration/*", h.OIDCDiscoveryHandler)
 }
 
-// nextMissingUpstream returns the name of the next upstream provider in the
-// authorization chain that does not yet have stored tokens for this session.
-// Returns empty string if all upstreams are satisfied.
+// nextMissingUpstream returns the name of the next redirect-flow upstream
+// provider in the authorization chain that does not yet have stored tokens
+// for this session. Direct-assertion providers (e.g., SPIFFE) are skipped
+// because they resolve identity from the request context, not via redirects.
+// Returns empty string if all redirect-flow upstreams are satisfied.
 // Returns an error if the storage lookup fails.
 func (h *Handler) nextMissingUpstream(ctx context.Context, sessionID string) (string, error) {
 	stored, err := h.storage.GetAllUpstreamTokens(ctx, sessionID)
@@ -131,6 +142,11 @@ func (h *Handler) nextMissingUpstream(ctx context.Context, sessionID string) (st
 		return "", fmt.Errorf("failed to check upstream token state: %w", err)
 	}
 	for _, u := range h.upstreams {
+		// Skip non-redirect providers — they don't participate in the
+		// browser redirect chain and have no storable tokens.
+		if _, ok := u.Provider.(upstream.RedirectFlowProvider); !ok {
+			continue
+		}
 		if _, ok := stored[u.Name]; !ok {
 			return u.Name, nil
 		}
@@ -141,11 +157,25 @@ func (h *Handler) nextMissingUpstream(ctx context.Context, sessionID string) (st
 // upstreamByName returns the upstream provider with the given name.
 // It follows the (value, bool) convention: the second return value is false
 // if no upstream with that name exists.
-func (h *Handler) upstreamByName(name string) (upstream.OAuth2Provider, bool) {
+func (h *Handler) upstreamByName(name string) (upstream.IdentityProvider, bool) {
 	for i := range h.upstreams {
 		if h.upstreams[i].Name == name {
 			return h.upstreams[i].Provider, true
 		}
 	}
 	return nil, false
+}
+
+// redirectProviderByName returns the redirect-flow provider with the given name.
+// Returns an error if the provider exists but does not support redirect flows.
+func (h *Handler) redirectProviderByName(name string) (upstream.RedirectFlowProvider, error) {
+	provider, ok := h.upstreamByName(name)
+	if !ok {
+		return nil, fmt.Errorf("upstream provider %q not found", name)
+	}
+	rfp, ok := provider.(upstream.RedirectFlowProvider)
+	if !ok {
+		return nil, fmt.Errorf("upstream provider %q does not support redirect flows", name)
+	}
+	return rfp, nil
 }

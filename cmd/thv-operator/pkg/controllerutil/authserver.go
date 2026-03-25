@@ -6,6 +6,7 @@ package controllerutil
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -60,6 +61,27 @@ const (
 
 	// DefaultSentinelPort is the default Redis Sentinel port
 	DefaultSentinelPort = 26379
+
+	// ProxyTLSCertVolumeName is the volume name for the proxy TLS certificate
+	ProxyTLSCertVolumeName = "proxy-tls-cert"
+
+	// ProxyTLSKeyVolumeName is the volume name for the proxy TLS private key
+	ProxyTLSKeyVolumeName = "proxy-tls-key"
+
+	// ProxyTLSClientCAVolumeName is the volume name for the proxy TLS client CA certificate
+	ProxyTLSClientCAVolumeName = "proxy-tls-client-ca"
+
+	// ProxyTLSMountPath is the base path where proxy TLS files are mounted
+	ProxyTLSMountPath = "/etc/toolhive/proxy-tls"
+
+	// ProxyTLSCertFileName is the filename for the TLS certificate
+	ProxyTLSCertFileName = "tls.crt"
+
+	// ProxyTLSKeyFileName is the filename for the TLS private key
+	ProxyTLSKeyFileName = "tls.key"
+
+	// ProxyTLSClientCAFileName is the filename for the client CA certificate
+	ProxyTLSClientCAFileName = "client-ca.crt"
 )
 
 // upstreamSecretBinding binds an upstream provider to its env var name for the
@@ -254,6 +276,74 @@ func GenerateAuthServerVolumes(
 		}
 	}
 
+	// Generate volumes for proxy TLS certificates
+	if authConfig.TLS != nil {
+		// Cert volume
+		volumes = append(volumes, corev1.Volume{
+			Name: ProxyTLSCertVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: authConfig.TLS.CertSecretRef.Name,
+					Items: []corev1.KeyToPath{{
+						Key:  authConfig.TLS.CertSecretRef.Key,
+						Path: ProxyTLSCertFileName,
+					}},
+					DefaultMode: k8sptr.To(int32(0400)),
+				},
+			},
+		})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      ProxyTLSCertVolumeName,
+			MountPath: filepath.Join(ProxyTLSMountPath, ProxyTLSCertFileName),
+			SubPath:   ProxyTLSCertFileName,
+			ReadOnly:  true,
+		})
+
+		// Key volume
+		volumes = append(volumes, corev1.Volume{
+			Name: ProxyTLSKeyVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: authConfig.TLS.KeySecretRef.Name,
+					Items: []corev1.KeyToPath{{
+						Key:  authConfig.TLS.KeySecretRef.Key,
+						Path: ProxyTLSKeyFileName,
+					}},
+					DefaultMode: k8sptr.To(int32(0400)),
+				},
+			},
+		})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      ProxyTLSKeyVolumeName,
+			MountPath: filepath.Join(ProxyTLSMountPath, ProxyTLSKeyFileName),
+			SubPath:   ProxyTLSKeyFileName,
+			ReadOnly:  true,
+		})
+
+		// ClientCA volume (only if configured)
+		if authConfig.TLS.ClientCASecretRef != nil {
+			volumes = append(volumes, corev1.Volume{
+				Name: ProxyTLSClientCAVolumeName,
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{
+						SecretName: authConfig.TLS.ClientCASecretRef.Name,
+						Items: []corev1.KeyToPath{{
+							Key:  authConfig.TLS.ClientCASecretRef.Key,
+							Path: ProxyTLSClientCAFileName,
+						}},
+						DefaultMode: k8sptr.To(int32(0400)),
+					},
+				},
+			})
+			volumeMounts = append(volumeMounts, corev1.VolumeMount{
+				Name:      ProxyTLSClientCAVolumeName,
+				MountPath: filepath.Join(ProxyTLSMountPath, ProxyTLSClientCAFileName),
+				SubPath:   ProxyTLSClientCAFileName,
+				ReadOnly:  true,
+			})
+		}
+	}
+
 	return volumes, volumeMounts
 }
 
@@ -407,6 +497,18 @@ func AddEmbeddedAuthServerConfigOptions(
 	// Add the configuration option
 	*options = append(*options, runner.WithEmbeddedAuthServerConfig(embeddedConfig))
 
+	// Add TLS configuration if set
+	if authServerConfig.TLS != nil {
+		tlsCfg := &runner.TLSConfig{
+			CertFile: filepath.Join(ProxyTLSMountPath, ProxyTLSCertFileName),
+			KeyFile:  filepath.Join(ProxyTLSMountPath, ProxyTLSKeyFileName),
+		}
+		if authServerConfig.TLS.ClientCASecretRef != nil {
+			tlsCfg.ClientCAFile = filepath.Join(ProxyTLSMountPath, ProxyTLSClientCAFileName)
+		}
+		*options = append(*options, runner.WithTLSConfig(tlsCfg))
+	}
+
 	return nil
 }
 
@@ -429,6 +531,23 @@ func BuildAuthServerRunConfig(
 		AuthorizationEndpointBaseURL: authConfig.AuthorizationEndpointBaseURL,
 		AllowedAudiences:             allowedAudiences,
 		ScopesSupported:              scopesSupported,
+	}
+
+	// Set SPIFFE trust domain if configured
+	config.SPIFFETrustDomain = authConfig.SPIFFETrustDomain
+
+	// Build SPIFFE client policy if configured
+	if authConfig.SPIFFEClientPolicy != nil {
+		policy := &authserver.SPIFFEClientPolicyRunConfig{
+			MaxRegistrations: int(authConfig.SPIFFEClientPolicy.MaxRegistrations),
+		}
+		for _, ai := range authConfig.SPIFFEClientPolicy.AllowedIdentities {
+			policy.AllowedIdentities = append(policy.AllowedIdentities, authserver.AllowedIdentityRunConfig{
+				Namespace:      ai.Namespace,
+				ServiceAccount: ai.ServiceAccount,
+			})
+		}
+		config.SPIFFEClientPolicy = policy
 	}
 
 	// Build signing key configuration

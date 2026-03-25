@@ -53,7 +53,7 @@ type testServer struct {
 
 // testServerOptions configures the test server setup.
 type testServerOptions struct {
-	upstream            upstream.OAuth2Provider
+	upstream            upstream.IdentityProvider
 	scopes              []string
 	accessTokenLifespan time.Duration
 }
@@ -61,8 +61,8 @@ type testServerOptions struct {
 // testServerOption is a functional option for test server setup.
 type testServerOption func(*testServerOptions)
 
-// withUpstream configures the test server to use an upstream OAuth2 provider.
-func withUpstream(provider upstream.OAuth2Provider) testServerOption {
+// withUpstream configures the test server to use an upstream identity provider.
+func withUpstream(provider upstream.IdentityProvider) testServerOption {
 	return func(opts *testServerOptions) {
 		opts.upstream = provider
 	}
@@ -175,7 +175,7 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 
 	// 7. Create server using newServer with test options
 	srv, err := newServer(ctx, cfg, stor,
-		withUpstreamFactory(func(_ context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
+		withUpstreamFactory(func(_ context.Context, _ *UpstreamConfig) (upstream.IdentityProvider, error) {
 			// Return the provided upstream or nil (which is valid for tests without upstream)
 			return options.upstream, nil
 		}),
@@ -508,7 +508,7 @@ func TestIntegration_TokenEndpoint_RefreshToken(t *testing.T) {
 type testServerWithUpstream struct {
 	*testServer
 	mockOIDC         *mockoidc.MockOIDC
-	upstreamProvider upstream.OAuth2Provider
+	upstreamProvider upstream.IdentityProvider
 }
 
 // startMockOIDC starts a mockoidc server with default test user.
@@ -1596,7 +1596,7 @@ func setupTestServerWithTwoUpstreams(t *testing.T, m1, m2 *mockoidc.MockOIDC) *t
 	require.NoError(t, err)
 
 	// Map of provider name to provider for the factory
-	providers := map[string]upstream.OAuth2Provider{
+	providers := map[string]upstream.IdentityProvider{
 		"provider-1": provider1,
 		"provider-2": provider2,
 	}
@@ -1618,7 +1618,7 @@ func setupTestServerWithTwoUpstreams(t *testing.T, m1, m2 *mockoidc.MockOIDC) *t
 
 	// 8. Create server using newServer with a factory that returns the correct provider per name
 	srv, err := newServer(ctx, serverCfg, stor,
-		withUpstreamFactory(func(_ context.Context, cfg *UpstreamConfig) (upstream.OAuth2Provider, error) {
+		withUpstreamFactory(func(_ context.Context, cfg *UpstreamConfig) (upstream.IdentityProvider, error) {
 			p, ok := providers[cfg.Name]
 			if !ok {
 				return nil, fmt.Errorf("unknown upstream: %s", cfg.Name)

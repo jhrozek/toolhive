@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -47,12 +48,16 @@ func generateRandomSecret() string {
 // from the client's TLS certificate):
 //  1. Reads client_id from the form body; if absent, uses the SPIFFE ID as client_id
 //  2. Validates that client_id matches the SPIFFE ID (per draft-ietf-oauth-spiffe-client-auth)
-//  3. Looks up the client in storage; if not found, auto-registers it
-//  4. Injects the dummy client_secret so fosite's built-in authentication succeeds
+//  3. Checks the SPIFFE ID against the registration policy (if configured)
+//  4. Looks up the client in storage; if not found, auto-registers it
+//  5. Injects the dummy client_secret so fosite's built-in authentication succeeds
 //
 // When no SPIFFE ID is in the context (browser OAuth flow), the request passes
 // through to the wrapped handler unchanged.
-func ClientAuthPreHandler(stor storage.Storage, scopesSupported, allowedAudiences []string, next http.Handler) http.Handler {
+//
+// The policy parameter controls which SPIFFE IDs are allowed to register.
+// When nil, all SPIFFE IDs are allowed (backward compatible).
+func ClientAuthPreHandler(stor storage.Storage, scopesSupported, allowedAudiences []string, policy *ClientPolicy, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		spiffeID, ok := SPIFFEIDFromContext(r.Context())
 		if !ok {
@@ -94,8 +99,20 @@ func ClientAuthPreHandler(stor storage.Storage, scopesSupported, allowedAudience
 			return
 		}
 
+		// Check registration policy before auto-registering.
+		// Policy is only checked when the client is not yet registered.
+		// If nil, all SPIFFE IDs are allowed (backward compatible).
+		if policy != nil && !policy.IsAllowed(spiffeID) {
+			slog.Warn("SPIFFE ID denied by registration policy",
+				"spiffe_id", spiffeIDStr,
+			)
+			writeOAuthError(w, http.StatusForbidden, "access_denied",
+				"SPIFFE ID is not authorized to register as a client")
+			return
+		}
+
 		// Ensure the client is registered in storage.
-		if err := ensureClientRegistered(r, stor, clientID, scopesSupported, allowedAudiences); err != nil {
+		if err := ensureClientRegistered(r, stor, clientID, scopesSupported, allowedAudiences, policy); err != nil {
 			slog.Error("failed to ensure SPIFFE client registration",
 				"client_id", clientID,
 				"error", err,
@@ -123,7 +140,9 @@ func ClientAuthPreHandler(stor storage.Storage, scopesSupported, allowedAudience
 // ensureClientRegistered looks up the client in storage and auto-registers it
 // if not found. This handles the TOCTOU race by catching ErrAlreadyExists on
 // registration and treating it as success.
-func ensureClientRegistered(r *http.Request, stor storage.Storage, clientID string, scopesSupported, allowedAudiences []string) error {
+// When policy is non-nil and MaxRegistrations is set, the policy's registration
+// counter is incremented atomically on new registrations.
+func ensureClientRegistered(r *http.Request, stor storage.Storage, clientID string, scopesSupported, allowedAudiences []string, policy *ClientPolicy) error {
 	ctx := r.Context()
 
 	// Check if client already exists.
@@ -137,6 +156,16 @@ func ensureClientRegistered(r *http.Request, stor storage.Storage, clientID stri
 	}
 
 	// Client not found — auto-register.
+	// Check MaxRegistrations before registering.
+	if policy != nil && !policy.IncrementRegistrations() {
+		slog.Warn("SPIFFE client registration denied: max registrations exceeded",
+			"client_id", clientID,
+			"max_registrations", policy.MaxRegistrations,
+			"current_count", policy.RegistrationCount(),
+		)
+		return fmt.Errorf("maximum number of client registrations exceeded")
+	}
+
 	slog.Debug("auto-registering SPIFFE client",
 		"client_id", clientID,
 	)
@@ -151,6 +180,10 @@ func ensureClientRegistered(r *http.Request, stor storage.Storage, clientID stri
 		Audience:      allowedAudiences,
 	})
 	if err != nil {
+		// Roll back the registration counter — slot was consumed but registration failed.
+		if policy != nil {
+			policy.DecrementRegistrations()
+		}
 		return err
 	}
 
@@ -158,10 +191,18 @@ func ensureClientRegistered(r *http.Request, stor storage.Storage, clientID stri
 		// Handle TOCTOU race: another request may have registered the client
 		// between our GetClient check and this RegisterClient call.
 		if errors.Is(err, storage.ErrAlreadyExists) {
+			// Roll back the counter — only one slot should be consumed per client.
+			if policy != nil {
+				policy.DecrementRegistrations()
+			}
 			slog.Debug("SPIFFE client already registered (concurrent registration)",
 				"client_id", clientID,
 			)
 			return nil
+		}
+		// Roll back the counter on unexpected storage errors.
+		if policy != nil {
+			policy.DecrementRegistrations()
 		}
 		return err
 	}

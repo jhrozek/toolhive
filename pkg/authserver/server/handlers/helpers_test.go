@@ -29,7 +29,7 @@ const (
 	testInternalState   = "internal-state-123"
 )
 
-// mockIDPProvider implements upstream.OAuth2Provider for testing.
+// mockIDPProvider implements upstream.RedirectFlowProvider for testing.
 type mockIDPProvider struct {
 	providerType          upstream.ProviderType
 	authorizationURL      string
@@ -46,7 +46,7 @@ type mockIDPProvider struct {
 }
 
 // Compile-time interface check.
-var _ upstream.OAuth2Provider = (*mockIDPProvider)(nil)
+var _ upstream.RedirectFlowProvider = (*mockIDPProvider)(nil)
 
 func (m *mockIDPProvider) Type() upstream.ProviderType {
 	if m.providerType == "" {
@@ -388,7 +388,7 @@ func handlerTestSetup(t *testing.T) (*Handler, *testStorageState, *mockIDPProvid
 	}
 
 	upstreams := []NamedUpstream{{Name: "test-upstream", Provider: mockUpstream}}
-	handler, err := NewHandler(provider, oauth2Config, stor, upstreams)
+	handler, err := NewHandler(provider, oauth2Config, stor, upstreams, nil)
 	require.NoError(t, err)
 
 	return handler, storState, mockUpstream
@@ -437,7 +437,7 @@ func multiUpstreamTestSetup(t *testing.T) (*Handler, *testStorageState, *mockIDP
 		{Name: "provider-1", Provider: mockProvider1},
 		{Name: "provider-2", Provider: mockProvider2},
 	}
-	handler, err := NewHandler(provider, oauth2Config, stor, upstreams)
+	handler, err := NewHandler(provider, oauth2Config, stor, upstreams, nil)
 	require.NoError(t, err)
 
 	return handler, storState, mockProvider1, mockProvider2

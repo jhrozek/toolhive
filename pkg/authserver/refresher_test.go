@@ -39,7 +39,7 @@ func TestUpstreamTokenRefresher_RefreshAndStore(t *testing.T) {
 		name           string
 		sessionID      string
 		expired        *storage.UpstreamTokens
-		setupProvider  func(*testing.T, *upstreammocks.MockOAuth2Provider)
+		setupProvider  func(*testing.T, *upstreammocks.MockRedirectFlowProvider)
 		setupStorage   func(*testing.T, *storagemocks.MockUpstreamTokenStorage)
 		wantErr        bool
 		wantErrContain string
@@ -49,7 +49,7 @@ func TestUpstreamTokenRefresher_RefreshAndStore(t *testing.T) {
 			name:      "successful refresh with token rotation",
 			sessionID: "session-1",
 			expired:   baseExpired,
-			setupProvider: func(_ *testing.T, p *upstreammocks.MockOAuth2Provider) {
+			setupProvider: func(_ *testing.T, p *upstreammocks.MockRedirectFlowProvider) {
 				p.EXPECT().RefreshTokens(gomock.Any(), "old-refresh", "upstream-sub-456").
 					Return(&upstream.Tokens{
 						AccessToken:  "new-access",
@@ -91,7 +91,7 @@ func TestUpstreamTokenRefresher_RefreshAndStore(t *testing.T) {
 			name:      "provider does not rotate refresh token - keeps old one",
 			sessionID: "session-2",
 			expired:   baseExpired,
-			setupProvider: func(_ *testing.T, p *upstreammocks.MockOAuth2Provider) {
+			setupProvider: func(_ *testing.T, p *upstreammocks.MockRedirectFlowProvider) {
 				p.EXPECT().RefreshTokens(gomock.Any(), "old-refresh", "upstream-sub-456").
 					Return(&upstream.Tokens{
 						AccessToken:  "new-access",
@@ -117,7 +117,7 @@ func TestUpstreamTokenRefresher_RefreshAndStore(t *testing.T) {
 			name:           "nil expired tokens returns error",
 			sessionID:      "session-3",
 			expired:        nil,
-			setupProvider:  func(_ *testing.T, _ *upstreammocks.MockOAuth2Provider) {},
+			setupProvider:  func(_ *testing.T, _ *upstreammocks.MockRedirectFlowProvider) {},
 			setupStorage:   func(_ *testing.T, _ *storagemocks.MockUpstreamTokenStorage) {},
 			wantErr:        true,
 			wantErrContain: "expired tokens are required",
@@ -133,7 +133,7 @@ func TestUpstreamTokenRefresher_RefreshAndStore(t *testing.T) {
 				UpstreamSubject: "upstream-sub-456",
 				ClientID:        "client-abc",
 			},
-			setupProvider:  func(_ *testing.T, _ *upstreammocks.MockOAuth2Provider) {},
+			setupProvider:  func(_ *testing.T, _ *upstreammocks.MockRedirectFlowProvider) {},
 			setupStorage:   func(_ *testing.T, _ *storagemocks.MockUpstreamTokenStorage) {},
 			wantErr:        true,
 			wantErrContain: "no refresh token available",
@@ -149,7 +149,7 @@ func TestUpstreamTokenRefresher_RefreshAndStore(t *testing.T) {
 				UpstreamSubject: "upstream-sub-456",
 				ClientID:        "client-abc",
 			},
-			setupProvider:  func(_ *testing.T, _ *upstreammocks.MockOAuth2Provider) {},
+			setupProvider:  func(_ *testing.T, _ *upstreammocks.MockRedirectFlowProvider) {},
 			setupStorage:   func(_ *testing.T, _ *storagemocks.MockUpstreamTokenStorage) {},
 			wantErr:        true,
 			wantErrContain: "no upstream provider configured",
@@ -158,7 +158,7 @@ func TestUpstreamTokenRefresher_RefreshAndStore(t *testing.T) {
 			name:      "provider refresh fails returns error",
 			sessionID: "session-5",
 			expired:   baseExpired,
-			setupProvider: func(_ *testing.T, p *upstreammocks.MockOAuth2Provider) {
+			setupProvider: func(_ *testing.T, p *upstreammocks.MockRedirectFlowProvider) {
 				p.EXPECT().RefreshTokens(gomock.Any(), "old-refresh", "upstream-sub-456").
 					Return(nil, errors.New("upstream IDP unavailable"))
 			},
@@ -170,7 +170,7 @@ func TestUpstreamTokenRefresher_RefreshAndStore(t *testing.T) {
 			name:      "storage fails after refresh - returns refreshed tokens anyway",
 			sessionID: "session-6",
 			expired:   baseExpired,
-			setupProvider: func(_ *testing.T, p *upstreammocks.MockOAuth2Provider) {
+			setupProvider: func(_ *testing.T, p *upstreammocks.MockRedirectFlowProvider) {
 				p.EXPECT().RefreshTokens(gomock.Any(), "old-refresh", "upstream-sub-456").
 					Return(&upstream.Tokens{
 						AccessToken:  "new-access",
@@ -205,14 +205,14 @@ func TestUpstreamTokenRefresher_RefreshAndStore(t *testing.T) {
 
 			ctrl := gomock.NewController(t)
 
-			mockProvider := upstreammocks.NewMockOAuth2Provider(ctrl)
+			mockProvider := upstreammocks.NewMockRedirectFlowProvider(ctrl)
 			mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
 
 			tt.setupProvider(t, mockProvider)
 			tt.setupStorage(t, mockStorage)
 
 			refresher := &upstreamTokenRefresher{
-				providers: map[string]upstream.OAuth2Provider{"github": mockProvider},
+				providers: map[string]upstream.RedirectFlowProvider{"github": mockProvider},
 				storage:   mockStorage,
 			}
 

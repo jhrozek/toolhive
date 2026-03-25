@@ -26,9 +26,9 @@ type server struct {
 	upstreams []handlers.NamedUpstream
 }
 
-// upstreamProviderFactory creates an upstream OAuth2Provider from configuration.
+// upstreamProviderFactory creates an upstream IdentityProvider from configuration.
 // This type enables dependency injection for testing.
-type upstreamProviderFactory func(ctx context.Context, cfg *UpstreamConfig) (upstream.OAuth2Provider, error)
+type upstreamProviderFactory func(ctx context.Context, cfg *UpstreamConfig) (upstream.IdentityProvider, error)
 
 // serverOption configures the server during construction.
 type serverOption func(*serverOptions)
@@ -41,12 +41,18 @@ type serverOptions struct {
 // defaultUpstreamFactory creates the production upstream provider based on type.
 // For OIDC providers, it creates an OIDCProviderImpl with discovery and ID token validation.
 // For OAuth2 providers, it creates a BaseOAuth2Provider.
-func defaultUpstreamFactory(ctx context.Context, cfg *UpstreamConfig) (upstream.OAuth2Provider, error) {
+// For SPIFFE providers, it creates a SPIFFEProvider with trust domain validation.
+func defaultUpstreamFactory(ctx context.Context, cfg *UpstreamConfig) (upstream.IdentityProvider, error) {
 	switch cfg.Type {
 	case UpstreamProviderTypeOIDC:
 		return upstream.NewOIDCProvider(ctx, cfg.OIDCConfig)
 	case UpstreamProviderTypeOAuth2:
 		return upstream.NewOAuth2Provider(cfg.OAuth2Config)
+	case UpstreamProviderTypeSPIFFE:
+		if cfg.SPIFFETrustDomain.IsZero() {
+			return nil, fmt.Errorf("trust_domain is required for SPIFFE upstream")
+		}
+		return upstream.NewSPIFFEProvider(cfg.SPIFFETrustDomain), nil
 	default:
 		return nil, fmt.Errorf("unsupported upstream type: %s", cfg.Type)
 	}
@@ -152,7 +158,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		}
 	}
 
-	handlerInstance, err := handlers.NewHandler(fositeProvider, authServerConfig, stor, upstreams)
+	handlerInstance, err := handlers.NewHandler(fositeProvider, authServerConfig, stor, upstreams, cfg.SPIFFEClientPolicy)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create handler: %w", err)
 	}
@@ -184,13 +190,20 @@ func (s *server) IDPTokenStorage() storage.UpstreamTokenStorage {
 // UpstreamTokenRefresher returns a refresher that wraps the upstream providers
 // and storage to transparently refresh expired upstream tokens. The refresher
 // dispatches to the correct provider based on each token's ProviderID.
+// Only redirect-flow providers support token refresh; direct-assertion providers
+// (SPIFFE) are excluded because they have no refresh tokens.
 func (s *server) UpstreamTokenRefresher() storage.UpstreamTokenRefresher {
 	if len(s.upstreams) == 0 {
 		return nil
 	}
-	providers := make(map[string]upstream.OAuth2Provider, len(s.upstreams))
+	providers := make(map[string]upstream.RedirectFlowProvider, len(s.upstreams))
 	for _, u := range s.upstreams {
-		providers[u.Name] = u.Provider
+		if rfp, ok := u.Provider.(upstream.RedirectFlowProvider); ok {
+			providers[u.Name] = rfp
+		}
+	}
+	if len(providers) == 0 {
+		return nil
 	}
 	return &upstreamTokenRefresher{
 		providers: providers,

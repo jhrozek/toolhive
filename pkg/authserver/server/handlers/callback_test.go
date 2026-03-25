@@ -746,7 +746,7 @@ func TestCallbackHandler_TwoUpstreams_StorePendingError_CleansUp(t *testing.T) {
 		{Name: "provider-1", Provider: mockP1},
 		{Name: "provider-2", Provider: mockP2},
 	}
-	handler, err := NewHandler(provider, oauth2Config, stor, upstreams)
+	handler, err := NewHandler(provider, oauth2Config, stor, upstreams, nil)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=p1-code&state="+firstLegState, nil)

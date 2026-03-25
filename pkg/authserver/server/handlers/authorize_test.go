@@ -161,10 +161,10 @@ func TestNewHandler_AcceptsEmptyUpstreams(t *testing.T) {
 
 	// Empty upstreams is allowed for SPIFFE-only deployments
 	// (client_credentials grant only, no human login flows)
-	_, err := NewHandler(nil, nil, nil, nil)
+	_, err := NewHandler(nil, nil, nil, nil, nil)
 	require.NoError(t, err, "NewHandler should accept nil upstreams")
 
-	_, err = NewHandler(nil, nil, nil, []NamedUpstream{})
+	_, err = NewHandler(nil, nil, nil, []NamedUpstream{}, nil)
 	require.NoError(t, err, "NewHandler should accept empty upstreams")
 }
 

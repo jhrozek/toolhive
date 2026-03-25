@@ -18,6 +18,7 @@ import (
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	"github.com/stacklok/toolhive/pkg/authserver/spiffe"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/networking"
@@ -86,6 +87,29 @@ type RunConfig struct {
 	// When set, the SPIFFE middleware validates that client certificates contain a SPIFFE ID
 	// from this trust domain. When empty, SPIFFE-based authentication is disabled.
 	SPIFFETrustDomain string `json:"spiffe_trust_domain,omitempty" yaml:"spiffe_trust_domain,omitempty"`
+
+	// SPIFFEClientPolicy controls which SPIFFE IDs are allowed to auto-register as OAuth clients.
+	// When nil, all SPIFFE IDs in the trust domain are allowed (backward compatible).
+	SPIFFEClientPolicy *SPIFFEClientPolicyRunConfig `json:"spiffe_client_policy,omitempty" yaml:"spiffe_client_policy,omitempty"`
+}
+
+// SPIFFEClientPolicyRunConfig is the serializable configuration for the SPIFFE client registration policy.
+type SPIFFEClientPolicyRunConfig struct {
+	// AllowedIdentities lists the namespace/service-account patterns that are permitted to register.
+	// An empty list denies all registrations.
+	AllowedIdentities []AllowedIdentityRunConfig `json:"allowed_identities" yaml:"allowed_identities"`
+
+	// MaxRegistrations caps the total number of auto-registered clients (0 = unlimited).
+	MaxRegistrations int `json:"max_registrations,omitempty" yaml:"max_registrations,omitempty"`
+}
+
+// AllowedIdentityRunConfig matches SPIFFE IDs by namespace and service account pattern.
+type AllowedIdentityRunConfig struct {
+	// Namespace is the Kubernetes namespace to match. Use "*" for any namespace.
+	Namespace string `json:"namespace" yaml:"namespace"`
+
+	// ServiceAccount is the Kubernetes service account to match. Use "*" for any service account.
+	ServiceAccount string `json:"service_account" yaml:"service_account"`
 }
 
 // SigningKeyRunConfig configures where to load signing keys from.
@@ -131,6 +155,9 @@ const (
 
 	// UpstreamProviderTypeOAuth2 is for pure OAuth 2.0 providers with explicit endpoints.
 	UpstreamProviderTypeOAuth2 UpstreamProviderType = "oauth2"
+
+	// UpstreamProviderTypeSPIFFE is for SPIFFE trust domain providers using mTLS direct assertion.
+	UpstreamProviderTypeSPIFFE UpstreamProviderType = "spiffe"
 )
 
 // DefaultUpstreamName is the name assigned to a single unnamed upstream.
@@ -156,16 +183,23 @@ type UpstreamRunConfig struct {
 	// If empty when only one upstream is configured, defaults to "default".
 	Name string `json:"name,omitempty" yaml:"name,omitempty"`
 
-	// Type specifies the provider type: "oidc" or "oauth2".
+	// Type specifies the provider type: "oidc", "oauth2", or "spiffe".
 	Type UpstreamProviderType `json:"type" yaml:"type"`
 
 	// OIDCConfig contains OIDC-specific configuration.
-	// Required when Type is "oidc", must be nil when Type is "oauth2".
+	// Required when Type is "oidc", must be nil for other types.
 	OIDCConfig *OIDCUpstreamRunConfig `json:"oidc_config,omitempty" yaml:"oidc_config,omitempty"`
 
 	// OAuth2Config contains OAuth 2.0-specific configuration.
-	// Required when Type is "oauth2", must be nil when Type is "oidc".
+	// Required when Type is "oauth2", must be nil for other types.
 	OAuth2Config *OAuth2UpstreamRunConfig `json:"oauth2_config,omitempty" yaml:"oauth2_config,omitempty"`
+
+	// SPIFFETrustDomain is the expected trust domain for SPIFFE providers.
+	// Required when Type is "spiffe", must be empty for other types.
+	// This controls which SPIFFE IDs are accepted from mTLS client certificates.
+	// Note: this is separate from Config.SPIFFETrustDomain which controls the
+	// mTLS middleware. Both should typically be set to the same value.
+	SPIFFETrustDomain string `json:"spiffe_trust_domain,omitempty" yaml:"spiffe_trust_domain,omitempty"`
 }
 
 // OIDCUpstreamRunConfig contains OIDC provider configuration.
@@ -291,23 +325,28 @@ type UserInfoFieldMappingRunConfig struct {
 }
 
 // UpstreamConfig wraps an upstream IDP configuration with identifying metadata.
-// It supports both OIDC providers (with discovery) and pure OAuth 2.0 providers.
+// It supports OIDC providers (with discovery), pure OAuth 2.0 providers, and
+// SPIFFE trust domain providers (mTLS direct assertion).
 type UpstreamConfig struct {
 	// Name uniquely identifies this upstream.
 	// Used for routing decisions and session binding in multi-upstream scenarios.
 	// If empty when only one upstream is configured, defaults to "default".
 	Name string `json:"name,omitempty" yaml:"name,omitempty"`
 
-	// Type specifies the provider type: "oidc" or "oauth2".
+	// Type specifies the provider type: "oidc", "oauth2", or "spiffe".
 	Type UpstreamProviderType `json:"type" yaml:"type"`
 
 	// OAuth2Config contains OAuth 2.0 provider configuration.
-	// Used when Type is "oauth2". Must be nil when Type is "oidc".
+	// Used when Type is "oauth2". Must be nil for other types.
 	OAuth2Config *upstream.OAuth2Config `json:"oauth2_config,omitempty" yaml:"oauth2_config,omitempty"`
 
 	// OIDCConfig contains OIDC provider configuration (uses discovery).
-	// Used when Type is "oidc". Must be nil when Type is "oauth2".
+	// Used when Type is "oidc". Must be nil for other types.
 	OIDCConfig *upstream.OIDCConfig `json:"oidc_config,omitempty" yaml:"oidc_config,omitempty"`
+
+	// SPIFFETrustDomain is the expected trust domain for SPIFFE upstream providers.
+	// Used when Type is "spiffe". Must be zero for other types.
+	SPIFFETrustDomain spiffeid.TrustDomain `json:"-" yaml:"-"`
 }
 
 // Config is the pure configuration for the OAuth authorization server.
@@ -378,6 +417,10 @@ type Config struct {
 	// contain a SPIFFE ID from this trust domain. When zero, SPIFFE-based authentication
 	// is disabled and the middleware is not mounted.
 	SPIFFETrustDomain spiffeid.TrustDomain
+
+	// SPIFFEClientPolicy controls which SPIFFE IDs are allowed to auto-register as OAuth clients.
+	// When nil, all SPIFFE IDs in the trust domain are allowed (backward compatible).
+	SPIFFEClientPolicy *spiffe.ClientPolicy
 }
 
 // Validate checks that the Config is valid.
@@ -504,6 +547,13 @@ func validateUpstreamType(up *UpstreamConfig) error {
 		}
 		if err := up.OAuth2Config.Validate(); err != nil {
 			return fmt.Errorf("upstream %q: %w", up.Name, err)
+		}
+	case UpstreamProviderTypeSPIFFE:
+		if up.SPIFFETrustDomain.IsZero() {
+			return fmt.Errorf("upstream %q: trust_domain is required for SPIFFE provider", up.Name)
+		}
+		if up.OIDCConfig != nil || up.OAuth2Config != nil {
+			return fmt.Errorf("upstream %q: oidc_config and oauth2_config must not be set when type is %q", up.Name, up.Type)
 		}
 	default:
 		return fmt.Errorf("upstream %q: unsupported provider type: %q", up.Name, up.Type)

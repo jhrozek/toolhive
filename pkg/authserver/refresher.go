@@ -14,12 +14,13 @@ import (
 )
 
 // upstreamTokenRefresher implements storage.UpstreamTokenRefresher by wrapping
-// a set of upstream OAuth2Providers (keyed by provider name) and
+// a set of upstream RedirectFlowProviders (keyed by provider name) and
 // UpstreamTokenStorage (for persisting the refreshed tokens). On each refresh
 // call it dispatches to the correct provider based on the expired token's
-// ProviderID.
+// ProviderID. Only redirect-flow providers support token refresh; direct-assertion
+// providers (SPIFFE) do not have refresh tokens and are excluded.
 type upstreamTokenRefresher struct {
-	providers map[string]upstream.OAuth2Provider
+	providers map[string]upstream.RedirectFlowProvider
 	storage   storage.UpstreamTokenStorage
 }
 
