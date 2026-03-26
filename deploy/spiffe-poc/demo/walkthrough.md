@@ -76,7 +76,7 @@ URI:spiffe://toolhive.dev/ns/agents/sa/intern-agent
 URI:spiffe://toolhive.dev/ns/untrusted/sa/rogue-agent
 ```
 
-**Say:** The SPIFFE ID encodes namespace and service account. The SPIFFE CSI driver issued these certificates automatically — no `kubectl create secret`, no cert signing request. When a pod is deleted the identity is revoked; when rescheduled a fresh SVID arrives.
+**Say:** The SPIFFE ID encodes namespace and service account. The cert-manager CSI driver issued these certificates automatically when the pod was scheduled — no `kubectl create secret`, no cert signing request. When a pod is deleted the identity is revoked; when rescheduled a fresh SVID arrives within seconds. In production, SPIRE would replace the CSI driver with stronger two-layer attestation and in-memory key storage — but the certificates and SPIFFE IDs look identical.
 
 ---
 

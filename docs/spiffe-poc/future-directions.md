@@ -135,7 +135,9 @@ What stays the same:
 
 **Effort:** Small (~50-80 lines)
 
-SPIRE provides the SPIFFE Workload API, which is the standard programmatic interface for obtaining SVIDs. The main change is replacing file-based cert loading with the Workload API client.
+SPIRE is the reference SPIFFE implementation and the recommended production path. It provides stronger security than cert-manager through two-layer attestation: node attestation verifies the kubelet runs on a legitimate node (using cloud instance identity, TPM, etc.), then workload attestation verifies the process is what it claims to be (Kubernetes SA + pod UID + container image). Private keys are held in SPIRE Agent memory and never written to disk, unlike the CSI driver which writes `tls.key` as a file. SPIRE also natively supports trust bundle distribution and federation via the Workload API — eliminating the need for manual ConfigMap distribution.
+
+The main code change is replacing file-based cert loading with the Workload API client.
 
 What changes:
 - **`pkg/runner/runner.go:907`** -- replace `buildTLSConfig`'s file-based `tls.LoadX509KeyPair` and `os.ReadFile` with `workloadapi.NewX509Source()`. This returns a `tls.Certificate` and trust bundle that auto-rotate without file I/O.
