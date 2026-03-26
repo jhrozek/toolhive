@@ -112,6 +112,28 @@ json_field() {
         "import sys,json; d=json.load(sys.stdin); print(d.get('${field}',''))" 2>/dev/null || true
 }
 
+# decode_jwt <token> — decodes and pretty-prints the JWT payload claims.
+decode_jwt() {
+    local token=$1
+    printf '%s' "${token}" | python3 -c "
+import sys, json, base64
+token = sys.stdin.read().strip()
+payload = token.split('.')[1]
+# Add padding
+payload += '=' * (4 - len(payload) % 4)
+claims = json.loads(base64.urlsafe_b64decode(payload))
+# Print selected claims in a readable format
+print('         sub:       ' + claims.get('sub', ''))
+print('         iss:       ' + claims.get('iss', ''))
+aud = claims.get('aud', [])
+print('         aud:       ' + (aud[0] if isinstance(aud, list) and aud else str(aud)))
+print('         client_id: ' + claims.get('client_id', ''))
+import datetime
+exp = claims.get('exp', 0)
+print('         exp:       ' + datetime.datetime.fromtimestamp(exp).strftime('%H:%M:%S') + ' (short-lived)')
+" 2>/dev/null || true
+}
+
 # ---------------------------------------------------------------------------
 # Prerequisites check
 # ---------------------------------------------------------------------------
@@ -217,7 +239,7 @@ act1_identity() {
 act2_authentication() {
     step "Act 2 — Authentication via workload identity"
     blank
-    info "Each agent presents its SVID as a TLS client certificate to the MCP proxy."
+    info "Each agent presents its X.509-SVID via mTLS to the MCP proxy."
     info "The embedded auth server validates the SPIFFE ID and issues a short-lived JWT."
     blank
     info "Registration policy on both proxies:"
@@ -235,6 +257,10 @@ act2_authentication() {
     DEVOPS_FETCH_TOKEN=$(json_field "${resp}" "access_token")
     if [ -n "${DEVOPS_FETCH_TOKEN}" ]; then
         result "  devops-agent  -> fetch proxy" "${TOKEN_OK}"
+        blank
+        info "  JWT claims (SPIFFE ID became the OAuth subject):"
+        decode_jwt "${DEVOPS_FETCH_TOKEN}"
+        blank
     else
         local err
         err=$(json_field "${resp}" "error_description")
@@ -260,14 +286,19 @@ act2_authentication() {
     if [ -n "${ROGUE_FETCH_TOKEN}" ]; then
         result "  rogue-agent   -> fetch proxy" "${TOKEN_OK}"
     else
-        local err
+        local err err_code
         err=$(json_field "${resp}" "error_description")
+        err_code=$(json_field "${resp}" "error")
         result "  rogue-agent   -> fetch proxy  [${err:-unknown}]" "${TOKEN_DENIED}"
+        blank
+        info "  Raw denial response from the auth server:"
+        dim "    $(printf '%s' "${resp}" | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin), indent=2).replace(chr(10), chr(10)+'    '))" 2>/dev/null || printf '%s' "${resp}")"
     fi
 
     blank
-    info "rogue-agent is rejected at registration — it never receives a JWT."
-    info "The token endpoint enforces namespace-level policy before any Cedar evaluation."
+    info "rogue-agent's SVID is valid (signed by the same CA), but its SPIFFE ID"
+    info "is in the 'untrusted' namespace — the registration policy rejects it before"
+    info "any token is issued. It never gets a JWT."
     blank
     info "Decoding a granted token (devops-agent, fetch proxy):"
     blank
@@ -408,10 +439,11 @@ summary() {
     info "                   Format: spiffe://<trust-domain>/ns/<ns>/sa/<sa>"
     info "                   No secrets, no passwords, no certificate signing requests."
     blank
-    info "2. Authentication: mTLS client certificate presented to the MCP proxy."
-    info "                   Embedded auth server validates the SVID against a"
-    info "                   namespace allow-list and issues a short-lived JWT."
-    info "                   SPIFFE ID becomes the JWT 'sub' claim."
+    info "2. Authentication: X.509-SVID presented via mTLS to the MCP proxy."
+    info "                   The SVID IS the client certificate — an X.509 cert"
+    info "                   with the SPIFFE ID as a URI SAN. The embedded auth"
+    info "                   server validates it against a namespace allow-list"
+    info "                   and issues a short-lived JWT (sub = SPIFFE ID)."
     blank
     info "3. Authorization:  Cedar policies evaluated on every MCP call."
     info "                   policy matches on claim_sub (the SPIFFE ID)."
