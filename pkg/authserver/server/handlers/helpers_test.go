@@ -12,6 +12,7 @@ import (
 
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/compose"
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
@@ -388,7 +389,7 @@ func handlerTestSetup(t *testing.T) (*Handler, *testStorageState, *mockIDPProvid
 	}
 
 	upstreams := []NamedUpstream{{Name: "test-upstream", Provider: mockUpstream}}
-	handler, err := NewHandler(provider, oauth2Config, stor, upstreams, nil)
+	handler, err := NewHandler(provider, oauth2Config, stor, upstreams, spiffeid.TrustDomain{})
 	require.NoError(t, err)
 
 	return handler, storState, mockUpstream
@@ -437,7 +438,7 @@ func multiUpstreamTestSetup(t *testing.T) (*Handler, *testStorageState, *mockIDP
 		{Name: "provider-1", Provider: mockProvider1},
 		{Name: "provider-2", Provider: mockProvider2},
 	}
-	handler, err := NewHandler(provider, oauth2Config, stor, upstreams, nil)
+	handler, err := NewHandler(provider, oauth2Config, stor, upstreams, spiffeid.TrustDomain{})
 	require.NoError(t, err)
 
 	return handler, storState, mockProvider1, mockProvider2

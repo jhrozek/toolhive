@@ -100,6 +100,11 @@ type Config struct {
 	// Public indicates whether this is a public client (no secret).
 	Public bool
 
+	// SkipSecretHash, when true, allows creating a confidential client without
+	// a hashed secret. Used for SPIFFE clients where authentication happens via
+	// mTLS at the transport layer, not via client_secret.
+	SkipSecretHash bool
+
 	// GrantTypes overrides the default grant types.
 	// If nil or empty, defaultGrantTypes is used.
 	GrantTypes []string
@@ -154,7 +159,7 @@ func New(cfg Config) (fosite.Client, error) {
 	// Set bcrypt-hashed secret for confidential clients.
 	// Fosite expects the Secret field to contain a bcrypt hash
 	// for proper credential validation.
-	if !cfg.Public {
+	if !cfg.Public && !cfg.SkipSecretHash {
 		if cfg.Secret == "" {
 			return nil, fmt.Errorf("confidential client requires a secret")
 		}

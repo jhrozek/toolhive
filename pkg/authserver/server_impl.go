@@ -15,6 +15,7 @@ import (
 
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
+	"github.com/stacklok/toolhive/pkg/authserver/spiffe"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
@@ -131,6 +132,27 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	slog.Debug("creating fosite OAuth2 provider")
 	fositeProvider := createProvider(authServerConfig, stor)
 
+	// If SPIFFE trust domain is configured, install a custom client authentication
+	// strategy that recognizes mTLS-authenticated SPIFFE clients and auto-registers
+	// them. When no SPIFFE ID is in the request context, the strategy delegates to
+	// fosite's default client authentication (HTTP Basic, client_secret_post, etc.).
+	if !cfg.SPIFFETrustDomain.IsZero() {
+		fositeInstance, ok := fositeProvider.(*fosite.Fosite)
+		if !ok {
+			return nil, fmt.Errorf("unexpected fosite provider type %T; cannot install SPIFFE auth strategy", fositeProvider)
+		}
+		authServerConfig.ClientAuthenticationStrategy = spiffe.NewClientAuthStrategy(
+			fositeInstance.DefaultClientAuthenticationStrategy,
+			stor,
+			cfg.ScopesSupported,
+			cfg.AllowedAudiences,
+			cfg.SPIFFEClientPolicy,
+		)
+		slog.Debug("SPIFFE client authentication strategy installed",
+			"trust_domain", cfg.SPIFFETrustDomain.String(),
+		)
+	}
+
 	// Build ordered upstream provider list from all configured upstreams.
 	upstreams := make([]handlers.NamedUpstream, 0, len(cfg.Upstreams))
 	for i := range cfg.Upstreams {
@@ -158,7 +180,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		}
 	}
 
-	handlerInstance, err := handlers.NewHandler(fositeProvider, authServerConfig, stor, upstreams, cfg.SPIFFEClientPolicy)
+	handlerInstance, err := handlers.NewHandler(fositeProvider, authServerConfig, stor, upstreams, cfg.SPIFFETrustDomain)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create handler: %w", err)
 	}
@@ -269,8 +291,8 @@ func createProvider(authServerConfig *oauthserver.AuthorizationServerConfig, sto
 		stor,
 		&compose.CommonStrategy{CoreStrategy: jwtStrategy},
 		compose.OAuth2AuthorizeExplicitFactory,      // Authorization code grant
-		compose.OAuth2RefreshTokenGrantFactory,       // Refresh token grant
-		compose.OAuth2PKCEFactory,                    // PKCE for public clients
+		compose.OAuth2RefreshTokenGrantFactory,      // Refresh token grant
+		compose.OAuth2PKCEFactory,                   // PKCE for public clients
 		compose.OAuth2ClientCredentialsGrantFactory, // Client credentials grant (SPIFFE agents)
 	)
 }

@@ -92,33 +92,57 @@ func (h *Handler) JWKSHandler(w http.ResponseWriter, _ *http.Request) {
 
 // buildOAuthMetadata constructs the base OAuth 2.0 Authorization Server Metadata (RFC 8414).
 // This is shared between the OAuth AS metadata endpoint and the OIDC discovery endpoint.
+//
+// The metadata is dynamic based on the configured upstreams and SPIFFE trust domain:
+//   - Grant types always include client_credentials; redirect-flow grants are added only
+//     when at least one upstream supports browser redirects.
+//   - Auth methods always include "none"; SPIFFE/mTLS methods are added when a trust
+//     domain is configured.
+//   - Authorization and registration endpoints are omitted in SPIFFE-only mode.
 func (h *Handler) buildOAuthMetadata() sharedobauth.AuthorizationServerMetadata {
 	issuer := h.config.GetAccessTokenIssuer()
 
-	return sharedobauth.AuthorizationServerMetadata{
-		// REQUIRED
-		Issuer: issuer,
-
-		// RECOMMENDED
-		AuthorizationEndpoint:  h.config.GetAuthorizationEndpointBaseURL() + "/oauth/authorize",
-		TokenEndpoint:          issuer + "/oauth/token",
-		JWKSURI:                issuer + "/.well-known/jwks.json",
-		RegistrationEndpoint:   issuer + "/oauth/register",
-		ResponseTypesSupported: []string{sharedobauth.ResponseTypeCode},
-		ScopesSupported:        h.config.ScopesSupported,
-
-		// OPTIONAL
-		GrantTypesSupported: []string{
+	// Grant types: always include client_credentials; conditionally include redirect-flow grants.
+	grantTypes := []string{string(fosite.GrantTypeClientCredentials)}
+	if h.hasRedirectFlowProviders() {
+		grantTypes = append([]string{
 			string(fosite.GrantTypeAuthorizationCode),
 			string(fosite.GrantTypeRefreshToken),
-			string(fosite.GrantTypeClientCredentials),
-		},
-		CodeChallengeMethodsSupported: []string{crypto.PKCEChallengeMethodS256},
-		TokenEndpointAuthMethodsSupported: []string{
-			sharedobauth.TokenEndpointAuthMethodNone,
-			sharedobauth.TokenEndpointAuthMethodTLSClientAuth,
-		},
+		}, grantTypes...)
 	}
+
+	// Auth methods: always include "none"; add "spiffe" + "tls_client_auth" when SPIFFE configured.
+	authMethods := []string{sharedobauth.TokenEndpointAuthMethodNone}
+	if !h.spiffeTrustDomain.IsZero() {
+		authMethods = append(authMethods,
+			sharedobauth.TokenEndpointAuthMethodTLSClientAuth,
+			sharedobauth.TokenEndpointAuthMethodSPIFFE,
+		)
+	}
+
+	metadata := sharedobauth.AuthorizationServerMetadata{
+		Issuer:                            issuer,
+		TokenEndpoint:                     issuer + "/oauth/token",
+		JWKSURI:                           issuer + "/.well-known/jwks.json",
+		GrantTypesSupported:               grantTypes,
+		ScopesSupported:                   h.config.ScopesSupported,
+		CodeChallengeMethodsSupported:     []string{crypto.PKCEChallengeMethodS256},
+		TokenEndpointAuthMethodsSupported: authMethods,
+	}
+
+	// Conditional redirect-flow fields.
+	if h.hasRedirectFlowProviders() {
+		metadata.AuthorizationEndpoint = h.config.GetAuthorizationEndpointBaseURL() + "/oauth/authorize"
+		metadata.RegistrationEndpoint = issuer + "/oauth/register"
+		metadata.ResponseTypesSupported = []string{sharedobauth.ResponseTypeCode}
+	}
+
+	// SPIFFE-specific metadata per draft-ietf-oauth-spiffe-client-auth-01 Section 4.
+	if !h.spiffeTrustDomain.IsZero() {
+		metadata.SPIFFETrustDomains = []string{h.spiffeTrustDomain.Name()}
+	}
+
+	return metadata
 }
 
 // OAuthDiscoveryHandler handles GET /.well-known/oauth-authorization-server requests.

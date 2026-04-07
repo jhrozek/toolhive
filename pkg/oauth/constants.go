@@ -58,6 +58,10 @@ const (
 	// per RFC 8705 Section 2. Used for SPIFFE-authenticated agents where the client
 	// identity is established via the TLS client certificate.
 	TokenEndpointAuthMethodTLSClientAuth = "tls_client_auth"
+
+	// TokenEndpointAuthMethodSPIFFE indicates SPIFFE-based mTLS client authentication.
+	// Per draft-ietf-oauth-spiffe-client-auth-01 Section 4.
+	TokenEndpointAuthMethodSPIFFE = "spiffe"
 )
 
 // PKCE (Proof Key for Code Exchange) methods as defined by RFC 7636.

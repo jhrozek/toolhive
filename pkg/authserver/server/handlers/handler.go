@@ -21,9 +21,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/ory/fosite"
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server"
-	"github.com/stacklok/toolhive/pkg/authserver/spiffe"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
@@ -40,12 +40,12 @@ type NamedUpstream struct {
 
 // Handler provides HTTP handlers for the OAuth authorization server endpoints.
 type Handler struct {
-	provider           fosite.OAuth2Provider
-	config             *server.AuthorizationServerConfig
-	storage            storage.Storage
-	upstreams          []NamedUpstream
-	userResolver       *UserResolver
-	spiffeClientPolicy *spiffe.ClientPolicy
+	provider          fosite.OAuth2Provider
+	config            *server.AuthorizationServerConfig
+	storage           storage.Storage
+	upstreams         []NamedUpstream
+	userResolver      *UserResolver
+	spiffeTrustDomain spiffeid.TrustDomain
 }
 
 // NewHandler creates a new Handler with the given dependencies.
@@ -53,8 +53,8 @@ type Handler struct {
 // during multi-upstream authorization flows (e.g., sequential token acquisition).
 // upstreams may be empty for SPIFFE-only deployments where only the
 // client_credentials grant is needed (no human login flows).
-// spiffePolicy controls which SPIFFE IDs are allowed to auto-register as OAuth clients.
-// When nil, all SPIFFE IDs are allowed (backward compatible).
+// spiffeTrustDomain is the SPIFFE trust domain for discovery metadata; zero value
+// means SPIFFE is not configured.
 //
 // Returns an error if any upstream entry has an empty name or nil provider.
 func NewHandler(
@@ -62,7 +62,7 @@ func NewHandler(
 	config *server.AuthorizationServerConfig,
 	stor storage.Storage,
 	upstreams []NamedUpstream,
-	spiffePolicy *spiffe.ClientPolicy,
+	spiffeTrustDomain spiffeid.TrustDomain,
 ) (*Handler, error) {
 	for _, u := range upstreams {
 		if u.Name == "" {
@@ -73,12 +73,12 @@ func NewHandler(
 		}
 	}
 	return &Handler{
-		provider:           provider,
-		config:             config,
-		storage:            stor,
-		upstreams:          upstreams,
-		userResolver:       NewUserResolver(stor),
-		spiffeClientPolicy: spiffePolicy,
+		provider:          provider,
+		config:            config,
+		storage:           stor,
+		upstreams:         upstreams,
+		userResolver:      NewUserResolver(stor),
+		spiffeTrustDomain: spiffeTrustDomain,
 	}, nil
 }
 
@@ -91,24 +91,12 @@ func (h *Handler) Routes() http.Handler {
 }
 
 // OAuthRoutes registers OAuth endpoints (authorize, callback, token, register) on the provided router.
-// The token endpoint is wrapped with a SPIFFE client authentication pre-handler that
-// auto-registers mTLS-authenticated SPIFFE clients before fosite processes the request.
+// SPIFFE client authentication is handled by the custom fosite ClientAuthenticationStrategy
+// (set on fosite.Config), not by an HTTP pre-handler.
 func (h *Handler) OAuthRoutes(r chi.Router) {
 	r.Get("/oauth/authorize", h.AuthorizeHandler)
 	r.Get("/oauth/callback", h.CallbackHandler)
-
-	// Wrap the token endpoint with SPIFFE client auth so that mTLS-authenticated
-	// agents using client_credentials are auto-registered and their dummy secret
-	// is injected before fosite's built-in client authentication runs.
-	tokenHandler := spiffe.ClientAuthPreHandler(
-		h.storage,
-		h.config.ScopesSupported,
-		h.config.AllowedAudiences,
-		h.spiffeClientPolicy,
-		http.HandlerFunc(h.TokenHandler),
-	)
-	r.Post("/oauth/token", tokenHandler.ServeHTTP)
-
+	r.Post("/oauth/token", h.TokenHandler)
 	r.Post("/oauth/register", h.RegisterClientHandler)
 }
 
@@ -164,6 +152,18 @@ func (h *Handler) upstreamByName(name string) (upstream.IdentityProvider, bool) 
 		}
 	}
 	return nil, false
+}
+
+// hasRedirectFlowProviders returns true if any upstream provider supports
+// browser redirect flows (OIDC/OAuth2). Used to determine which OAuth endpoints
+// and grant types to advertise in discovery metadata.
+func (h *Handler) hasRedirectFlowProviders() bool {
+	for _, u := range h.upstreams {
+		if _, ok := u.Provider.(upstream.RedirectFlowProvider); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // redirectProviderByName returns the redirect-flow provider with the given name.

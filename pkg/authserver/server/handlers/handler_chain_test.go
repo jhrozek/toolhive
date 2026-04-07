@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ory/fosite/compose"
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -140,7 +141,7 @@ func TestNextMissingUpstream_StorageError(t *testing.T) {
 			{Name: "provider-1", Provider: mockUpstream1},
 			{Name: "provider-2", Provider: mockUpstream2},
 		},
-		nil,
+		spiffeid.TrustDomain{},
 	)
 	require.NoError(t, err)
 

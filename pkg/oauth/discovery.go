@@ -21,8 +21,8 @@ type AuthorizationServerMetadata struct {
 	Issuer string `json:"issuer"`
 
 	// AuthorizationEndpoint is the URL of the authorization endpoint (RECOMMENDED).
-	// Note: No omitempty to maintain backward compatibility with existing JSON serialization.
-	AuthorizationEndpoint string `json:"authorization_endpoint"`
+	// Omitted when empty (e.g., SPIFFE-only mode with no redirect flows).
+	AuthorizationEndpoint string `json:"authorization_endpoint,omitempty"`
 
 	// TokenEndpoint is the URL of the token endpoint (RECOMMENDED).
 	// Note: No omitempty to maintain backward compatibility with existing JSON serialization.
@@ -57,6 +57,14 @@ type AuthorizationServerMetadata struct {
 	// ScopesSupported lists the OAuth 2.0 scope values supported (RECOMMENDED per RFC 8414).
 	// For MCP authorization servers, this typically includes "openid" and "offline_access".
 	ScopesSupported []string `json:"scopes_supported,omitempty"`
+
+	// SPIFFETrustDomains lists the SPIFFE trust domains accepted for client authentication.
+	// Per draft-ietf-oauth-spiffe-client-auth-01 Section 4.
+	SPIFFETrustDomains []string `json:"spiffe_trust_domains,omitempty"`
+
+	// SPIFFEBundleEndpoint is the URL of the SPIFFE bundle endpoint.
+	// Per draft-ietf-oauth-spiffe-client-auth-01 Section 4.
+	SPIFFEBundleEndpoint string `json:"spiffe_bundle_endpoint,omitempty"`
 }
 
 // OIDCDiscoveryDocument represents the OpenID Connect Discovery 1.0 document.

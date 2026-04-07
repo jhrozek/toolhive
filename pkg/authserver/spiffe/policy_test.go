@@ -222,11 +222,11 @@ func TestParseKubernetesPath(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		path    string
-		wantNS  string
-		wantSA  string
-		wantOK  bool
+		name   string
+		path   string
+		wantNS string
+		wantSA string
+		wantOK bool
 	}{
 		{"valid path", "/ns/default/sa/my-agent", "default", "my-agent", true},
 		{"hyphenated names", "/ns/my-namespace/sa/my-service-account", "my-namespace", "my-service-account", true},

@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"testing"
 
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -161,10 +162,10 @@ func TestNewHandler_AcceptsEmptyUpstreams(t *testing.T) {
 
 	// Empty upstreams is allowed for SPIFFE-only deployments
 	// (client_credentials grant only, no human login flows)
-	_, err := NewHandler(nil, nil, nil, nil, nil)
+	_, err := NewHandler(nil, nil, nil, nil, spiffeid.TrustDomain{})
 	require.NoError(t, err, "NewHandler should accept nil upstreams")
 
-	_, err = NewHandler(nil, nil, nil, []NamedUpstream{}, nil)
+	_, err = NewHandler(nil, nil, nil, []NamedUpstream{}, spiffeid.TrustDomain{})
 	require.NoError(t, err, "NewHandler should accept empty upstreams")
 }
 

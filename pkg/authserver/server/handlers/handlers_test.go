@@ -25,6 +25,7 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -87,7 +88,7 @@ func testSetupWithOptions(t *testing.T, opts testSetupOptions) *Handler {
 	// Use a dummy upstream for basic handler tests that don't need IDP functionality
 	dummyUpstream := &mockIDPProvider{}
 	handler, err := NewHandler(provider, oauth2Config, stor,
-		[]NamedUpstream{{Name: "default", Provider: dummyUpstream}}, nil)
+		[]NamedUpstream{{Name: "default", Provider: dummyUpstream}}, spiffeid.TrustDomain{})
 	require.NoError(t, err)
 
 	return handler
@@ -143,7 +144,7 @@ func TestJWKSHandler_NilJWKS(t *testing.T) {
 	provider := fosite.NewOAuth2Provider(stor, cfg.Config)
 	dummyUpstream := &mockIDPProvider{}
 	handler, err := NewHandler(provider, cfg, stor,
-		[]NamedUpstream{{Name: "default", Provider: dummyUpstream}}, nil)
+		[]NamedUpstream{{Name: "default", Provider: dummyUpstream}}, spiffeid.TrustDomain{})
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
@@ -248,6 +249,82 @@ func TestOIDCDiscoveryHandler(t *testing.T) {
 	assert.Contains(t, discovery.GrantTypesSupported, "refresh_token")
 	assert.Contains(t, discovery.CodeChallengeMethodsSupported, "S256")
 	assert.Contains(t, discovery.TokenEndpointAuthMethodsSupported, "none")
+}
+
+func TestOAuthDiscoveryHandler_SPIFFEOnlyMode(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	t.Cleanup(func() {
+		ctrl.Finish()
+	})
+
+	// Generate RSA key for testing
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	secret := make([]byte, 32)
+	_, err = rand.Read(secret)
+	require.NoError(t, err)
+
+	cfg := &server.AuthorizationServerParams{
+		Issuer:               "https://auth.example.com",
+		AccessTokenLifespan:  time.Hour,
+		RefreshTokenLifespan: time.Hour * 24,
+		AuthCodeLifespan:     time.Minute * 10,
+		HMACSecrets:          servercrypto.NewHMACSecrets(secret),
+		SigningKeyID:         "test-key-1",
+		SigningKeyAlgorithm:  "RS256",
+		SigningKey:           rsaKey,
+	}
+
+	oauth2Config, err := server.NewAuthorizationServerConfig(cfg)
+	require.NoError(t, err)
+
+	stor := mocks.NewMockStorage(ctrl)
+	stor.EXPECT().GetClient(gomock.Any(), gomock.Any()).Return(nil, fosite.ErrNotFound).AnyTimes()
+
+	provider := fosite.NewOAuth2Provider(stor, oauth2Config.Config)
+
+	// SPIFFE-only: no upstreams, non-zero trust domain
+	td := spiffeid.RequireTrustDomainFromString("toolhive.dev")
+	handler, err := NewHandler(provider, oauth2Config, stor, []NamedUpstream{}, td)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	rec := httptest.NewRecorder()
+
+	handler.OAuthDiscoveryHandler(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var metadata sharedobauth.AuthorizationServerMetadata
+	err = json.NewDecoder(rec.Body).Decode(&metadata)
+	require.NoError(t, err)
+
+	// SPIFFE-only mode: only client_credentials grant
+	assert.Equal(t, []string{"client_credentials"}, metadata.GrantTypesSupported)
+
+	// Auth methods should include none, tls_client_auth, and spiffe
+	assert.Equal(t, []string{"none", "tls_client_auth", "spiffe"}, metadata.TokenEndpointAuthMethodsSupported)
+
+	// No redirect-flow fields
+	assert.Empty(t, metadata.AuthorizationEndpoint, "authorization_endpoint should be omitted in SPIFFE-only mode")
+	assert.Empty(t, metadata.RegistrationEndpoint, "registration_endpoint should be omitted in SPIFFE-only mode")
+	assert.Nil(t, metadata.ResponseTypesSupported, "response_types_supported should be nil in SPIFFE-only mode")
+
+	// SPIFFE trust domain should be advertised
+	assert.Equal(t, []string{"toolhive.dev"}, metadata.SPIFFETrustDomains)
+
+	// Verify authorization_endpoint is not present in raw JSON
+	var rawResponse map[string]interface{}
+	rec2 := httptest.NewRecorder()
+	handler.OAuthDiscoveryHandler(rec2, httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil))
+	err = json.NewDecoder(rec2.Body).Decode(&rawResponse)
+	require.NoError(t, err)
+
+	_, hasAuthEndpoint := rawResponse["authorization_endpoint"]
+	assert.False(t, hasAuthEndpoint, "authorization_endpoint should not be serialized in SPIFFE-only mode")
 }
 
 func TestOAuthDiscoveryHandler_WithAuthorizationEndpointBaseURL(t *testing.T) {

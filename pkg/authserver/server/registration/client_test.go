@@ -359,6 +359,79 @@ func TestNewClient_CustomOverrides(t *testing.T) {
 	assert.ElementsMatch(t, customScopes, client.GetScopes())
 }
 
+func TestNewClient_SkipSecretHash(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		cfg         Config
+		expectErr   string
+		checkPublic *bool // nil means don't check
+		checkSecret bool  // if true, assert GetHashedSecret() is nil/empty
+		isLoopback  bool  // if true, expect *LoopbackClient
+	}{
+		{
+			name: "confidential client with SkipSecretHash succeeds without secret",
+			cfg: Config{
+				ID:             "spiffe://example.org/workload",
+				Public:         false,
+				SkipSecretHash: true,
+				GrantTypes:     []string{"client_credentials"},
+			},
+			checkSecret: true,
+		},
+		{
+			name: "SkipSecretHash does not affect public clients",
+			cfg: Config{
+				ID:             "test-public-skip",
+				Public:         true,
+				SkipSecretHash: true,
+			},
+			isLoopback: true,
+		},
+		{
+			name: "confidential client without SkipSecretHash still requires secret",
+			cfg: Config{
+				ID:             "test-no-skip",
+				Public:         false,
+				SkipSecretHash: false,
+				Secret:         "",
+			},
+			expectErr: "confidential client requires a secret",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			client, err := New(tt.cfg)
+
+			if tt.expectErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.expectErr)
+				assert.Nil(t, client)
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, client)
+
+			if tt.isLoopback {
+				_, ok := client.(*LoopbackClient)
+				assert.True(t, ok, "public client should be wrapped in LoopbackClient")
+			}
+
+			if tt.checkSecret {
+				defaultClient, ok := client.(*fosite.DefaultClient)
+				require.True(t, ok, "confidential client should be *fosite.DefaultClient")
+				assert.False(t, defaultClient.IsPublic())
+				assert.Empty(t, defaultClient.GetHashedSecret(), "hashed secret should be nil/empty when SkipSecretHash is true")
+			}
+		})
+	}
+}
+
 func TestNewClient_EmptySlicesUseDefaults(t *testing.T) {
 	t.Parallel()
 

@@ -4,6 +4,7 @@
 package spiffe_test
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
@@ -17,8 +18,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"context"
 
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/stretchr/testify/assert"
@@ -39,10 +38,10 @@ const (
 	svidCertFile   = "/tmp/e2e-svid.crt"
 	svidKeyFile    = "/tmp/e2e-svid.key"
 
-	expectedSPIFFEID  = "spiffe://toolhive.dev/ns/default/sa/test-agent"
-	testTrustDomain   = "toolhive.dev"
-	testAudience      = "https://test.example.com"
-	serverSAN         = "authserver.toolhive-system.svc.cluster.local"
+	expectedSPIFFEID = "spiffe://toolhive.dev/ns/default/sa/test-agent"
+	testTrustDomain  = "toolhive.dev"
+	testAudience     = "https://test.example.com"
+	serverSAN        = "authserver.toolhive-system.svc.cluster.local"
 )
 
 // certFiles lists all files required by the E2E tests.
