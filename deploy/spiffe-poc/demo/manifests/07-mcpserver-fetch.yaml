@@ -7,7 +7,7 @@
 #
 # Cedar authorization policy:
 #   - devops-agent: can call ANY tool and list tools
-#   - intern-agent: can only call fetch_url and list tools
+#   - intern-agent: can call fetch tool and list tools
 #   - rogue-agent (untrusted ns): denied at registration; never gets a JWT
 #
 # The SPIFFE ID injected as claim_sub has the form:
@@ -49,11 +49,11 @@ spec:
             principal.claim_sub like "spiffe://toolhive.dev/ns/agents/sa/devops-*"
           };
         - |
-          // intern-agent: restricted to fetch_url only
+          // intern-agent: can call the fetch tool
           permit(
             principal,
             action == Action::"call_tool",
-            resource == Tool::"fetch_url"
+            resource == Tool::"fetch"
           )
           when {
             principal.claim_sub like "spiffe://toolhive.dev/ns/agents/sa/intern-*"
