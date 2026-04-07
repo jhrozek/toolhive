@@ -276,3 +276,43 @@ The demo manifests in `deploy/spiffe-poc/demo/manifests/` include an OAuth2 upst
 - `token_endpoint_auth_methods_supported`: `["spiffe"]` only
 
 This makes the discovery document an accurate reflection of what the server actually supports, which helps clients auto-configure correctly.
+
+---
+
+## 5. Next Demo Milestones
+
+These are the concrete next steps for an external-facing demo beyond the current PoC.
+
+### Real agent demo with pydantic-ai
+
+The current demo uses `curl` from inside pods. A compelling external demo would show a **pydantic-ai agent** (Python) calling MCP tools end-to-end via SPIFFE authentication:
+
+- A pydantic-ai agent running as a Kubernetes pod with a SPIFFE SVID
+- The agent authenticates to the MCP proxy via mTLS, obtains a JWT
+- The agent calls MCP tools using the JWT (standard Bearer auth)
+- Cedar policies control which tools the agent can call
+- The audience sees a real AI agent workflow, not manual curl commands
+
+This requires: a pydantic-ai wrapper that handles the SPIFFE mTLS → OAuth → MCP tool call flow, packaged as a container image deployable via MCPServer or standalone pod.
+
+### RFC 8693 user delegation with `act` claims
+
+When a user invokes an agent (e.g., via a browser), the flow should produce a **delegated token** where `sub` = user (from OIDC) and `act.sub` = agent SPIFFE ID. This enables:
+
+- Cedar policies that reason about both the user AND the agent: "allow this tool call only when user is in group `engineering` AND agent is `devops-agent`"
+- Audit trail completeness: every action records who requested it and which agent executed it
+- Authority reduction: the delegated token carries the intersection of user and agent permissions
+
+Implementation: server-side RFC 8693 handler in `pkg/authserver/server/handlers/`, composing the existing SPIFFE upstream (agent identity) with an OIDC upstream (user identity). The `IdentityProvider` hierarchy already supports both flow types.
+
+### SPIRE integration
+
+Replace cert-manager CSI driver with SPIRE for production-grade attestation:
+
+- Two-layer attestation (node + workload) instead of trusting kubelet alone
+- In-memory key storage (private keys never touch disk)
+- Dynamic trust bundle distribution via Workload API
+- Experimental Sigstore integration for image provenance attestation
+- ~50-80 lines of code change in `pkg/runner/runner.go` (`workloadapi.NewX509Source`)
+
+See Section 2 (Portability) for the detailed change analysis.
