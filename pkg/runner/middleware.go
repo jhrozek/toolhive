@@ -298,6 +298,12 @@ func addUpstreamSwapMiddleware(
 		return middlewares, nil
 	}
 
+	// Skip upstream swap when all upstreams are direct-assertion providers (e.g., SPIFFE).
+	// These providers authenticate via mTLS and have no storable upstream tokens to swap.
+	if !hasRedirectFlowUpstreams(config.EmbeddedAuthServerConfig) {
+		return middlewares, nil
+	}
+
 	// Use provided config or defaults
 	upstreamSwapConfig := config.UpstreamSwapConfig
 	if upstreamSwapConfig == nil {
@@ -328,6 +334,19 @@ func addUpstreamSwapMiddleware(
 	return append(middlewares, *upstreamSwapMwConfig), nil
 }
 
+// hasRedirectFlowUpstreams returns true if any upstream in the embedded auth server
+// config uses a redirect-flow protocol (OIDC, OAuth2). SPIFFE upstreams are
+// direct-assertion and have no storable tokens, so they don't need upstream swap.
+func hasRedirectFlowUpstreams(cfg *authserver.RunConfig) bool {
+	for _, u := range cfg.Upstreams {
+		switch u.Type {
+		case authserver.UpstreamProviderTypeOIDC, authserver.UpstreamProviderTypeOAuth2:
+			return true
+		}
+	}
+	return false
+}
+
 // injectUpstreamProviderIfNeeded enriches an authz.Config with the
 // PrimaryUpstreamProvider derived from the embedded auth server config.
 // When the embedded auth server is active, Cedar policies should evaluate
@@ -338,6 +357,12 @@ func injectUpstreamProviderIfNeeded(
 	embeddedCfg *authserver.RunConfig,
 ) (*authz.Config, error) {
 	if embeddedCfg == nil {
+		return authzCfg, nil
+	}
+
+	// Skip injection when all upstreams are direct-assertion (SPIFFE).
+	// Cedar should evaluate the ToolHive JWT claims directly, not upstream IDP claims.
+	if !hasRedirectFlowUpstreams(embeddedCfg) {
 		return authzCfg, nil
 	}
 
