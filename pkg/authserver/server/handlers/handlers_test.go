@@ -302,8 +302,8 @@ func TestOAuthDiscoveryHandler_SPIFFEOnlyMode(t *testing.T) {
 	err = json.NewDecoder(rec.Body).Decode(&metadata)
 	require.NoError(t, err)
 
-	// SPIFFE-only mode: only client_credentials grant
-	assert.Equal(t, []string{"client_credentials"}, metadata.GrantTypesSupported)
+	// SPIFFE-only mode: client_credentials + token exchange grants
+	assert.Equal(t, []string{"client_credentials", "urn:ietf:params:oauth:grant-type:token-exchange"}, metadata.GrantTypesSupported)
 
 	// Auth methods should include none, tls_client_auth, and spiffe
 	assert.Equal(t, []string{"none", "tls_client_auth", "spiffe"}, metadata.TokenEndpointAuthMethodsSupported)

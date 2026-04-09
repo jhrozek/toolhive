@@ -23,6 +23,7 @@ import (
 	"github.com/ory/fosite"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/crypto"
+	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	sharedobauth "github.com/stacklok/toolhive/pkg/oauth"
 )
 
@@ -102,13 +103,17 @@ func (h *Handler) JWKSHandler(w http.ResponseWriter, _ *http.Request) {
 func (h *Handler) buildOAuthMetadata() sharedobauth.AuthorizationServerMetadata {
 	issuer := h.config.GetAccessTokenIssuer()
 
-	// Grant types: always include client_credentials; conditionally include redirect-flow grants.
+	// Grant types: always include client_credentials; conditionally include redirect-flow grants
+	// and token exchange when SPIFFE is configured.
 	grantTypes := []string{string(fosite.GrantTypeClientCredentials)}
 	if h.hasRedirectFlowProviders() {
 		grantTypes = append([]string{
 			string(fosite.GrantTypeAuthorizationCode),
 			string(fosite.GrantTypeRefreshToken),
 		}, grantTypes...)
+	}
+	if !h.spiffeTrustDomain.IsZero() {
+		grantTypes = append(grantTypes, tokenexchange.GrantTypeTokenExchange)
 	}
 
 	// Auth methods: always include "none"; add "spiffe" + "tls_client_auth" when SPIFFE configured.
