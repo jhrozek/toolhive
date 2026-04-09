@@ -5,15 +5,11 @@
 #   1. The proxy listener serves TLS using the cert-manager-issued server cert.
 #   2. Clients (agent pods) present their SPIFFE SVID as a TLS client certificate.
 #   3. The embedded auth server validates the SPIFFE ID against spiffeClientPolicy
-#      and issues a short-lived JWT that is forwarded upstream with the MCP call.
+#      and issues a short-lived JWT via client_credentials grant.
+#   4. Cedar policies evaluate the SPIFFE ID (JWT sub claim) for tool authorization.
 #
-# upstreamProviders (CRD requires minItems: 1):
-#   This demo uses SPIFFE mTLS as the only auth path. There is no external IdP.
-#   We satisfy the minItems constraint with a type: oauth2 placeholder entry.
-#   The oauth2 provider type uses explicit endpoint URLs and does NOT perform
-#   OIDC discovery at startup, avoiding a chicken-and-egg failure where the
-#   upstream URL points to the same server that is still starting up.
-#   This upstream is never exercised at runtime — SPIFFE mTLS is the auth path.
+# No upstreamProviders are needed: SPIFFE mTLS is the only auth path.
+# The embedded auth server issues tokens directly — no external IdP.
 ---
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPExternalAuthConfig
@@ -40,13 +36,4 @@ spec:
       clientCASecretRef:
         name: fetch-tls-secret
         key: ca.crt
-    upstreamProviders:
-      - name: spiffe-placeholder
-        type: oauth2
-        oauth2Config:
-          authorizationEndpoint: "https://mcp-fetch-proxy.toolhive-system.svc.cluster.local:8080/oauth/authorize"
-          tokenEndpoint: "https://mcp-fetch-proxy.toolhive-system.svc.cluster.local:8080/oauth/token"
-          clientId: "spiffe-poc"
-          redirectUri: "https://mcp-fetch-proxy.toolhive-system.svc.cluster.local:8080/oauth/callback"
-          userInfo:
-            endpointUrl: "https://mcp-fetch-proxy.toolhive-system.svc.cluster.local:8080/oauth/userinfo"
+    upstreamProviders: []

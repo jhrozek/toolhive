@@ -216,11 +216,11 @@ type EmbeddedAuthServerConfig struct {
 	// UpstreamProviders configures connections to upstream Identity Providers.
 	// The embedded auth server delegates authentication to these providers.
 	// MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple.
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinItems=1
+	// May be empty for SPIFFE-only deployments (client_credentials grant only).
+	// +optional
 	// +listType=map
 	// +listMapKey=name
-	UpstreamProviders []UpstreamProviderConfig `json:"upstreamProviders"`
+	UpstreamProviders []UpstreamProviderConfig `json:"upstreamProviders,omitempty"`
 
 	// Storage configures the storage backend for the embedded auth server.
 	// If not specified, defaults to in-memory storage.

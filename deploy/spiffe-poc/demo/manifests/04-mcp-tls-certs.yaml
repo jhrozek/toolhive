@@ -4,6 +4,9 @@
 # signs the server cert is the same CA that signs agent SVIDs — enabling mTLS
 # where both sides share the same root of trust.
 # Each Secret will contain: tls.crt, tls.key, ca.crt (the SPIFFE root CA).
+#
+# Prerequisite: deploy/spiffe-poc/setup.sh must have run first. It creates the
+# spiffe-ca-bundle ConfigMap in toolhive-system that MCPServer OIDC config references.
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate
