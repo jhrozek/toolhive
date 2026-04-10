@@ -108,7 +108,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 	// Test cases
 	testCases := []struct {
 		name             string
-		policy           string
+		policies         []string
 		claims           jwt.MapClaims
 		feature          authorizers.MCPFeature
 		operation        authorizers.MCPOperation
@@ -118,7 +118,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 	}{
 		{
 			name: "User with correct name can call weather tool",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"call_tool",
@@ -127,7 +127,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			when {
 				context.claim_name == "John Doe"
 			};
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub":   "user123",
 				"name":  "John Doe",
@@ -141,7 +141,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "User with incorrect name cannot call weather tool",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"call_tool",
@@ -150,7 +150,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			when {
 				context.claim_name == "John Doe"
 			};
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub":   "user123",
 				"name":  "Jane Smith",
@@ -164,7 +164,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "Admin user can call any tool",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"call_tool",
@@ -173,7 +173,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			when {
 				context.claim_role == "admin"
 			};
-			`,
+			`},
 			claims: map[string]interface{}{
 				"sub":  "admin123",
 				"name": "Admin User",
@@ -187,7 +187,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "User with specific argument value can call tool",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"call_tool",
@@ -196,7 +196,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			when {
 				context.arg_operation == "add" && context.arg_value1 == 5
 			};
-			`,
+			`},
 			claims: map[string]interface{}{
 				"sub":  "user123",
 				"name": "John Doe",
@@ -213,7 +213,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "User with specific role in array can access resource",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"read_resource",
@@ -222,7 +222,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			when {
 				context.claim_groups.contains("editor")
 			};
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub":    "user123",
 				"name":   "John Doe",
@@ -236,13 +236,13 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "User can get prompt",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"get_prompt",
 				resource == Prompt::"greeting"
 			);
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub":  "user123",
 				"name": "John Doe",
@@ -256,13 +256,13 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "User can list tools",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"list_tools",
 				resource == FeatureType::"tool"
 			);
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub":  "user123",
 				"name": "John Doe",
@@ -276,13 +276,13 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "User can list prompts",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"list_prompts",
 				resource == FeatureType::"prompt"
 			);
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub":  "user123",
 				"name": "John Doe",
@@ -296,13 +296,13 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "User can list resources",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"list_resources",
 				resource == FeatureType::"resource"
 			);
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub":  "user123",
 				"name": "John Doe",
@@ -313,6 +313,115 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			resourceID:       "",
 			arguments:        nil,
 			expectAuthorized: true,
+		},
+		{
+			name: "Delegated access permitted when act claim matches SPIFFE ID pattern",
+			policies: []string{`
+			permit(
+				principal,
+				action == Action::"call_tool",
+				resource == Tool::"deploy"
+			)
+			when {
+				context.claim_sub == "user@example.com" &&
+				context has claim_act &&
+				context.claim_act.sub like "spiffe://toolhive.dev/ns/agents/sa/*"
+			};
+			`},
+			claims: jwt.MapClaims{
+				"sub": "user@example.com",
+				"act": map[string]interface{}{
+					"sub": "spiffe://toolhive.dev/ns/agents/sa/devops-agent",
+				},
+			},
+			feature:          authorizers.MCPFeatureTool,
+			operation:        authorizers.MCPOperationCall,
+			resourceID:       "deploy",
+			arguments:        nil,
+			expectAuthorized: true,
+		},
+		{
+			name: "Delegated access denied when act claim has wrong SPIFFE ID",
+			policies: []string{`
+			permit(
+				principal,
+				action == Action::"call_tool",
+				resource == Tool::"deploy"
+			)
+			when {
+				context.claim_sub == "user@example.com" &&
+				context has claim_act &&
+				context.claim_act.sub like "spiffe://toolhive.dev/ns/agents/sa/*"
+			};
+			`},
+			claims: jwt.MapClaims{
+				"sub": "user@example.com",
+				"act": map[string]interface{}{
+					"sub": "spiffe://evil.example.com/ns/agents/sa/attacker",
+				},
+			},
+			feature:          authorizers.MCPFeatureTool,
+			operation:        authorizers.MCPOperationCall,
+			resourceID:       "deploy",
+			arguments:        nil,
+			expectAuthorized: false,
+		},
+		{
+			name: "Forbid delegated access to admin tools when act claim present",
+			policies: []string{
+				`permit(principal, action == Action::"call_tool", resource);`,
+				`forbid(principal, action == Action::"call_tool", resource == Tool::"admin_reset")
+				when { context has claim_act };`,
+			},
+			claims: jwt.MapClaims{
+				"sub": "user@example.com",
+				"act": map[string]interface{}{
+					"sub": "spiffe://toolhive.dev/ns/agents/sa/devops-agent",
+				},
+			},
+			feature:          authorizers.MCPFeatureTool,
+			operation:        authorizers.MCPOperationCall,
+			resourceID:       "admin_reset",
+			arguments:        nil,
+			expectAuthorized: false,
+		},
+		{
+			name: "Direct access to admin tools allowed when no act claim",
+			policies: []string{
+				`permit(principal, action == Action::"call_tool", resource);`,
+				`forbid(principal, action == Action::"call_tool", resource == Tool::"admin_reset")
+				when { context has claim_act };`,
+			},
+			claims: jwt.MapClaims{
+				"sub": "user@example.com",
+			},
+			feature:          authorizers.MCPFeatureTool,
+			operation:        authorizers.MCPOperationCall,
+			resourceID:       "admin_reset",
+			arguments:        nil,
+			expectAuthorized: true,
+		},
+		{
+			name: "Policy with has operator does not match when act claim absent",
+			policies: []string{`
+			permit(
+				principal,
+				action == Action::"call_tool",
+				resource == Tool::"deploy"
+			)
+			when {
+				context has claim_act &&
+				context.claim_act.sub like "spiffe://toolhive.dev/ns/agents/sa/*"
+			};
+			`},
+			claims: jwt.MapClaims{
+				"sub": "user@example.com",
+			},
+			feature:          authorizers.MCPFeatureTool,
+			operation:        authorizers.MCPOperationCall,
+			resourceID:       "deploy",
+			arguments:        nil,
+			expectAuthorized: false,
 		},
 	}
 
@@ -325,7 +434,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 
 			// Create a Cedar authorizer
 			authorizer, err := NewCedarAuthorizer(ConfigOptions{
-				Policies:     []string{tc.policy},
+				Policies:     tc.policies,
 				EntitiesJSON: `[]`,
 			})
 			require.NoError(t, err, "Failed to create Cedar authorizer")
