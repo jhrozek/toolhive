@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"time"
 
 	"github.com/ory/fosite"
@@ -92,31 +93,10 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 
 	form := requester.GetRequestForm()
 
-	// Validate required RFC 8693 parameters.
-	subjectToken := form.Get("subject_token")
-	if subjectToken == "" {
-		return errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
-			"The 'subject_token' parameter is required for token exchange."))
-	}
-
-	subjectTokenType := form.Get("subject_token_type")
-	if subjectTokenType == "" {
-		return errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
-			"The 'subject_token_type' parameter is required for token exchange."))
-	}
-
-	if subjectTokenType != TokenTypeAccessToken && subjectTokenType != TokenTypeJWT {
-		return errorsx.WithStack(fosite.ErrInvalidRequest.WithHintf(
-			"The 'subject_token_type' value %q is not supported. Use %q or %q.",
-			subjectTokenType, TokenTypeAccessToken, TokenTypeJWT))
-	}
-
-	// Reject actor_token parameters — the acting party identity is derived
-	// exclusively from the SPIFFE mTLS client certificate, not from a token.
-	if form.Get("actor_token") != "" || form.Get("actor_token_type") != "" {
-		return errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
-			"The 'actor_token' and 'actor_token_type' parameters are not supported. " +
-				"Actor identity is derived from the SPIFFE mTLS client certificate."))
+	// Validate required RFC 8693 form parameters.
+	subjectToken, err := validateFormParams(form)
+	if err != nil {
+		return err
 	}
 
 	// Validate the subject token against the server's own JWKS.
@@ -218,6 +198,38 @@ func (h *Handler) PopulateTokenEndpointResponse(
 	responder.SetExtra("issued_token_type", TokenTypeAccessToken)
 
 	return nil
+}
+
+// validateFormParams validates the required RFC 8693 form parameters and returns
+// the subject_token value on success.
+func validateFormParams(form url.Values) (string, error) {
+	subjectToken := form.Get("subject_token")
+	if subjectToken == "" {
+		return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
+			"The 'subject_token' parameter is required for token exchange."))
+	}
+
+	subjectTokenType := form.Get("subject_token_type")
+	if subjectTokenType == "" {
+		return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
+			"The 'subject_token_type' parameter is required for token exchange."))
+	}
+
+	if subjectTokenType != TokenTypeAccessToken && subjectTokenType != TokenTypeJWT {
+		return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHintf(
+			"The 'subject_token_type' value %q is not supported. Use %q or %q.",
+			subjectTokenType, TokenTypeAccessToken, TokenTypeJWT))
+	}
+
+	// Reject actor_token parameters — the acting party identity is derived
+	// exclusively from the SPIFFE mTLS client certificate, not from a token.
+	if form.Get("actor_token") != "" || form.Get("actor_token_type") != "" {
+		return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
+			"The 'actor_token' and 'actor_token_type' parameters are not supported. " +
+				"Actor identity is derived from the SPIFFE mTLS client certificate."))
+	}
+
+	return subjectToken, nil
 }
 
 // computeLifetime returns the minimum of the subject token's remaining lifetime

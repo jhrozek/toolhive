@@ -622,7 +622,7 @@ func TestInjectUpstreamProviderIfNeeded(t *testing.T) {
 			name: "named_upstream_is_used_as_provider",
 			embeddedCfg: &authserver.RunConfig{
 				Upstreams: []authserver.UpstreamRunConfig{
-					{Name: "github"},
+					{Name: "github", Type: authserver.UpstreamProviderTypeOIDC},
 				},
 			},
 			wantErr:          false,
@@ -632,19 +632,29 @@ func TestInjectUpstreamProviderIfNeeded(t *testing.T) {
 			name: "unnamed_upstream_falls_back_to_default",
 			embeddedCfg: &authserver.RunConfig{
 				Upstreams: []authserver.UpstreamRunConfig{
-					{Name: ""},
+					{Name: "", Type: authserver.UpstreamProviderTypeOIDC},
 				},
 			},
 			wantErr:          false,
 			wantProviderName: authserver.DefaultUpstreamName,
 		},
 		{
-			name: "empty_upstreams_falls_back_to_default",
+			name: "spiffe_only_upstreams_skips_injection",
+			embeddedCfg: &authserver.RunConfig{
+				Upstreams: []authserver.UpstreamRunConfig{
+					{Name: "spiffe", Type: authserver.UpstreamProviderTypeSPIFFE},
+				},
+			},
+			wantErr:         false,
+			wantSamePointer: true, // SPIFFE-only skips upstream injection
+		},
+		{
+			name: "empty_upstreams_skips_injection",
 			embeddedCfg: &authserver.RunConfig{
 				Upstreams: []authserver.UpstreamRunConfig{},
 			},
-			wantErr:          false,
-			wantProviderName: authserver.DefaultUpstreamName,
+			wantErr:         false,
+			wantSamePointer: true, // No redirect-flow upstreams → skip injection
 		},
 	}
 
@@ -709,7 +719,7 @@ func TestAddAuthzMiddleware_InjectsUpstreamProvider(t *testing.T) {
 
 	embeddedCfg := &authserver.RunConfig{
 		Upstreams: []authserver.UpstreamRunConfig{
-			{Name: "myidp"},
+			{Name: "myidp", Type: authserver.UpstreamProviderTypeOIDC},
 		},
 	}
 

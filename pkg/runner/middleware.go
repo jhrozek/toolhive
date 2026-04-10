@@ -337,11 +337,15 @@ func addUpstreamSwapMiddleware(
 // hasRedirectFlowUpstreams returns true if any upstream in the embedded auth server
 // config uses a redirect-flow protocol (OIDC, OAuth2). SPIFFE upstreams are
 // direct-assertion and have no storable tokens, so they don't need upstream swap.
-func hasRedirectFlowUpstreams(cfg *authserver.RunConfig) bool {
-	for _, u := range cfg.Upstreams {
+func hasRedirectFlowUpstreams(asCfg *authserver.RunConfig) bool {
+	for _, u := range asCfg.Upstreams {
 		switch u.Type {
 		case authserver.UpstreamProviderTypeOIDC, authserver.UpstreamProviderTypeOAuth2:
 			return true
+		case authserver.UpstreamProviderTypeSPIFFE:
+			// SPIFFE is direct-assertion, no redirect flow.
+		default:
+			// Unknown types are not redirect-flow.
 		}
 	}
 	return false

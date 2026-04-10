@@ -130,11 +130,11 @@ func verifySignature(
 	var lastErr error
 	for _, key := range publicJWKS.Keys {
 		*extraClaims = make(map[string]interface{})
-		if err := token.Claims(key, standardClaims, extraClaims); err == nil {
+		err := token.Claims(key, standardClaims, extraClaims)
+		if err == nil {
 			return nil
-		} else {
-			lastErr = err
 		}
+		lastErr = err
 	}
 	if lastErr != nil {
 		return fmt.Errorf("subject token signature verification failed: %w", lastErr)

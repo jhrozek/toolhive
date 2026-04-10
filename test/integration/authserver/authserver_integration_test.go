@@ -343,18 +343,21 @@ func TestEmbeddedAuthServer_ConfigurationValidation(t *testing.T) {
 		assert.Contains(t, err.Error(), "audience")
 	})
 
-	t.Run("Missing upstreams returns error", func(t *testing.T) {
+	t.Run("Empty upstreams succeeds for SPIFFE-only mode", func(t *testing.T) {
 		t.Parallel()
 
 		cfg := &authserver.RunConfig{
 			SchemaVersion:    authserver.CurrentSchemaVersion,
 			Issuer:           "http://localhost:8080",
 			AllowedAudiences: []string{"https://mcp.example.com"},
-			// Missing Upstreams
+			// Empty upstreams is valid for SPIFFE-only deployments
+			// (client_credentials grant only, no human login flows).
 		}
 
-		_, err := authserverrunner.NewEmbeddedAuthServer(ctx, cfg)
-		require.Error(t, err)
+		server, err := authserverrunner.NewEmbeddedAuthServer(ctx, cfg)
+		require.NoError(t, err)
+		require.NotNil(t, server)
+		t.Cleanup(func() { _ = server.Close() })
 	})
 
 	t.Run("Invalid issuer URL returns error", func(t *testing.T) {
