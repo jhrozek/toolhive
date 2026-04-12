@@ -28,7 +28,7 @@ const testAgentSPIFFEID = "spiffe://toolhive.dev/ns/agents/sa/devops-agent"
 func newTestHandler(t *testing.T, tj *testJWKS, delegationLifespan time.Duration) *Handler {
 	t.Helper()
 
-	validator, err := NewSubjectTokenValidator(tj.jwks, testIssuer)
+	validator, err := NewSelfIssuedTokenValidator(tj.jwks, testIssuer)
 	require.NoError(t, err)
 
 	return &Handler{
