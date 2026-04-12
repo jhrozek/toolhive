@@ -28,6 +28,9 @@ const (
 
 	// TokenTypeJWT is the RFC 8693 token type URI for JWT tokens.
 	TokenTypeJWT = "urn:ietf:params:oauth:token-type:jwt" //nolint:gosec // not a credential
+
+	// TokenTypeIDToken is the RFC 8693 token type URI for ID tokens.
+	TokenTypeIDToken = "urn:ietf:params:oauth:token-type:id_token" //nolint:gosec // not a credential
 )
 
 // Compile-time check that Handler implements fosite.TokenEndpointHandler.
@@ -41,9 +44,19 @@ var _ fosite.TokenEndpointHandler = (*Handler)(nil)
 // delegation per RFC 8693 Section 4.1.
 type Handler struct {
 	*oauth2.HandleHelper
-	validator          SubjectTokenValidator
+	validator          SubjectTokenValidator // for subject tokens (multi-issuer)
+	selfValidator      SubjectTokenValidator // for actor tokens (self-issued only)
 	delegationLifespan time.Duration
 	config             tokenExchangeConfig
+}
+
+// formParams holds the validated RFC 8693 form parameters extracted from a
+// token exchange request.
+type formParams struct {
+	subjectToken     string
+	subjectTokenType string
+	actorToken       string // empty if not provided
+	actorTokenType   string // empty if not provided
 }
 
 // tokenExchangeConfig defines the configuration interface needed by the handler.
@@ -83,31 +96,26 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 			"The OAuth 2.0 Client is marked as public and is thus not allowed to use authorization grant 'token-exchange'."))
 	}
 
-	// Extract the SPIFFE ID from the context. Token exchange requires mTLS authentication
-	// so the SPIFFE ID must be present.
-	spiffeID, ok := spiffe.SPIFFEIDFromContext(ctx)
-	if !ok {
-		return errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
-			"Token exchange requires SPIFFE mTLS authentication."))
-	}
-
 	form := requester.GetRequestForm()
 
 	// Validate required RFC 8693 form parameters.
-	subjectToken, err := validateFormParams(form)
+	params, err := validateFormParams(form)
 	if err != nil {
 		return err
 	}
 
-	// Validate the subject token against the server's own JWKS.
-	validatedClaims, err := h.validator.Validate(ctx, subjectToken)
+	// Validate the subject token against the configured token validator.
+	validatedClaims, err := h.validator.Validate(ctx, params.subjectToken)
 	if err != nil {
-		slog.Debug("Subject token validation failed",
-			"error", err,
-			"spiffe_id", spiffeID.String(),
-		)
+		slog.Debug("Subject token validation failed", "error", err)
 		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
 			"The subject token is invalid or could not be verified.").WithWrap(err))
+	}
+
+	// Resolve actor identity: explicit actor_token or implicit mTLS.
+	actorSub, err := h.resolveActorIdentity(ctx, params, client)
+	if err != nil {
+		return err
 	}
 
 	// Validate that each requested scope is allowed for this client.
@@ -141,7 +149,7 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 
 	// Add the RFC 8693 Section 4.1 "act" claim identifying the acting party (agent).
 	delegatedSession.JWTClaims.Extra["act"] = map[string]interface{}{
-		"sub": spiffeID.String(),
+		"sub": actorSub,
 	}
 
 	// Compute the delegated token lifetime: the shorter of the subject token's
@@ -157,7 +165,7 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 
 	slog.Debug("Token exchange request validated",
 		"subject", validatedClaims.Subject,
-		"agent", spiffeID.String(),
+		"actor", actorSub,
 		"lifetime", lifetime.String(),
 	)
 
@@ -200,36 +208,104 @@ func (h *Handler) PopulateTokenEndpointResponse(
 	return nil
 }
 
+// resolveActorIdentity determines the acting party identity from an explicit
+// actor_token or from the mTLS SPIFFE ID in the context.
+//
+// When actor_token is present, it is validated against the AS's own JWKS
+// (actor tokens are always self-issued). The actor token's subject must be
+// bound to the authenticated client identity to prevent replay attacks.
+//
+// When actor_token is absent, the SPIFFE ID from mTLS is required.
+func (h *Handler) resolveActorIdentity(
+	ctx context.Context, params *formParams, client fosite.Client,
+) (string, error) {
+	if params.actorToken != "" {
+		// Validate actor_token against the AS's own JWKS (must be self-issued).
+		actorClaims, err := h.selfValidator.Validate(ctx, params.actorToken)
+		if err != nil {
+			slog.Debug("Actor token validation failed", "error", err)
+			return "", errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
+				"The actor token is invalid or could not be verified.").WithWrap(err))
+		}
+		// Binding check: actor_token.sub MUST match the authenticated client ID.
+		// This prevents replay attacks where a leaked actor token is presented
+		// by a different client. The client ID is always verified by fosite's
+		// client authentication (mTLS, client_secret, etc.) before reaching here.
+		if actorClaims.Subject != client.GetID() {
+			return "", errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
+				"The actor token subject does not match the authenticated client identity."))
+		}
+		return actorClaims.Subject, nil
+	}
+
+	// Fall back to mTLS identity.
+	spiffeID, ok := spiffe.SPIFFEIDFromContext(ctx)
+	if !ok {
+		return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
+			"Token exchange requires either an actor_token or SPIFFE mTLS authentication."))
+	}
+	return spiffeID.String(), nil
+}
+
 // validateFormParams validates the required RFC 8693 form parameters and returns
-// the subject_token value on success.
-func validateFormParams(form url.Values) (string, error) {
+// the parsed parameters on success.
+func validateFormParams(form url.Values) (*formParams, error) {
 	subjectToken := form.Get("subject_token")
 	if subjectToken == "" {
-		return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
+		return nil, errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
 			"The 'subject_token' parameter is required for token exchange."))
 	}
 
 	subjectTokenType := form.Get("subject_token_type")
 	if subjectTokenType == "" {
-		return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
+		return nil, errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
 			"The 'subject_token_type' parameter is required for token exchange."))
 	}
 
-	if subjectTokenType != TokenTypeAccessToken && subjectTokenType != TokenTypeJWT {
-		return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHintf(
-			"The 'subject_token_type' value %q is not supported. Use %q or %q.",
-			subjectTokenType, TokenTypeAccessToken, TokenTypeJWT))
+	switch subjectTokenType {
+	case TokenTypeAccessToken, TokenTypeJWT, TokenTypeIDToken:
+		// Valid subject token types.
+	default:
+		return nil, errorsx.WithStack(fosite.ErrInvalidRequest.WithHintf(
+			"The 'subject_token_type' value %q is not supported. Use %q, %q, or %q.",
+			subjectTokenType, TokenTypeAccessToken, TokenTypeJWT, TokenTypeIDToken))
 	}
 
-	// Reject actor_token parameters — the acting party identity is derived
-	// exclusively from the SPIFFE mTLS client certificate, not from a token.
-	if form.Get("actor_token") != "" || form.Get("actor_token_type") != "" {
-		return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
-			"The 'actor_token' and 'actor_token_type' parameters are not supported. " +
-				"Actor identity is derived from the SPIFFE mTLS client certificate."))
+	actorToken := form.Get("actor_token")
+	actorTokenType := form.Get("actor_token_type")
+
+	// actor_token_type without actor_token is invalid.
+	if actorTokenType != "" && actorToken == "" {
+		return nil, errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
+			"The 'actor_token_type' parameter requires 'actor_token' to be present."))
 	}
 
-	return subjectToken, nil
+	// actor_token requires actor_token_type.
+	if actorToken != "" && actorTokenType == "" {
+		return nil, errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
+			"The 'actor_token_type' parameter is required when 'actor_token' is present."))
+	}
+
+	// Validate actor_token_type if present.
+	// Note: id_token is intentionally excluded for actor tokens. An actor presents
+	// a bearer credential (access_token/jwt), not an identity assertion (id_token).
+	if actorTokenType != "" {
+		switch actorTokenType {
+		case TokenTypeAccessToken, TokenTypeJWT:
+			// Valid actor token types.
+		default:
+			return nil, errorsx.WithStack(fosite.ErrInvalidRequest.WithHintf(
+				"The 'actor_token_type' value %q is not supported. Use %q or %q.",
+				actorTokenType, TokenTypeAccessToken, TokenTypeJWT))
+		}
+	}
+
+	return &formParams{
+		subjectToken:     subjectToken,
+		subjectTokenType: subjectTokenType,
+		actorToken:       actorToken,
+		actorTokenType:   actorTokenType,
+	}, nil
 }
 
 // computeLifetime returns the minimum of the subject token's remaining lifetime
