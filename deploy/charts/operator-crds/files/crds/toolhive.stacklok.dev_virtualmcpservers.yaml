@@ -606,6 +606,12 @@ spec:
                             OIDCConfig contains OIDC-specific configuration.
                             Required when Type is "oidc", must be nil when Type is "oauth2".
                           properties:
+                            allowPrivateIP:
+                              description: |-
+                                AllowPrivateIP allows OIDC discovery and JWKS endpoints to resolve to
+                                private IP addresses. Required for in-cluster OIDC issuers (e.g., Keycloak)
+                                where service DNS resolves to cluster-internal IPs. Default: false.
+                              type: boolean
                             caBundleConfigMapRef:
                               description: |-
                                 CABundleConfigMapRef references a ConfigMap containing the CA certificate

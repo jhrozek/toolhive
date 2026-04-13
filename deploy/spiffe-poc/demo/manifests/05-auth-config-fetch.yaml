@@ -44,6 +44,7 @@ spec:
         oidcConfig:
           issuerUrl: "https://keycloak-dev-service.keycloak.svc.cluster.local:8443/realms/toolhive"
           clientId: "mcp-test-client"
+          allowPrivateIP: true  # Required: Keycloak service resolves to cluster-internal IP
           caBundleConfigMapRef:
             configMapRef:
               name: keycloak-ca-bundle

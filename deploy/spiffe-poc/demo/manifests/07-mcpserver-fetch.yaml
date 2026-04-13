@@ -21,6 +21,11 @@ metadata:
 spec:
   image: ghcr.io/stackloklabs/gofetch/server:1.0.1
   transport: streamable-http
+  resourceOverrides:
+    proxyDeployment:
+      env:
+        - name: TOOLHIVE_DEBUG
+          value: "true"
   oidcConfig:
     type: inline
     resourceUrl: "https://mcp-fetch-proxy.toolhive-system.svc.cluster.local:8080"

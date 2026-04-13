@@ -20,6 +20,42 @@
 #   - OIDC discovery: https://keycloak-dev-service.keycloak.svc.cluster.local:8443/realms/toolhive/.well-known/openid-configuration
 #   - Keycloak CA cert in Secret keycloak-ca-secret (key: ca.crt)
 ---
+# Approval policy for the self-signed Keycloak CA certificate.
+# Required by approver-policy which is deployed in the SPIFFE PoC.
+apiVersion: policy.cert-manager.io/v1alpha1
+kind: CertificateRequestPolicy
+metadata:
+  name: allow-keycloak-ca
+spec:
+  allowed:
+    commonName:
+      value: "Keycloak Dev CA"
+    isCA: true
+  selector:
+    issuerRef:
+      group: cert-manager.io
+      kind: ClusterIssuer
+      name: keycloak-selfsigned-issuer
+---
+# Approval policy for Keycloak server certs issued by the Keycloak CA.
+apiVersion: policy.cert-manager.io/v1alpha1
+kind: CertificateRequestPolicy
+metadata:
+  name: allow-keycloak-server-certs
+spec:
+  allowed:
+    dnsNames:
+      values:
+        - "keycloak-dev-service*"
+        - "*.keycloak.svc*"
+    usages:
+      - server auth
+  selector:
+    issuerRef:
+      group: cert-manager.io
+      kind: Issuer
+      name: keycloak-ca-issuer
+---
 # Self-signed bootstrap issuer for the Keycloak CA.
 # This is completely separate from the SPIFFE CA infrastructure.
 apiVersion: cert-manager.io/v1
