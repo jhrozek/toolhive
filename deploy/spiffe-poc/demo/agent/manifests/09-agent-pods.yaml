@@ -39,11 +39,11 @@ spec:
             configMapKeyRef:
               name: agent-config
               key: LLM_MODEL
-        - name: OPENAI_API_KEY
+        - name: ANTHROPIC_API_KEY
           valueFrom:
             secretKeyRef:
               name: llm-api-key
-              key: OPENAI_API_KEY
+              key: ANTHROPIC_API_KEY
       volumeMounts:
         - name: spiffe-certs
           mountPath: /var/run/secrets/spiffe.io
@@ -85,11 +85,11 @@ spec:
             configMapKeyRef:
               name: agent-config
               key: LLM_MODEL
-        - name: OPENAI_API_KEY
+        - name: ANTHROPIC_API_KEY
           valueFrom:
             secretKeyRef:
               name: llm-api-key
-              key: OPENAI_API_KEY
+              key: ANTHROPIC_API_KEY
       volumeMounts:
         - name: spiffe-certs
           mountPath: /var/run/secrets/spiffe.io
