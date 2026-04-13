@@ -344,6 +344,8 @@ func hasRedirectFlowUpstreams(asCfg *authserver.RunConfig) bool {
 			return true
 		case authserver.UpstreamProviderTypeSPIFFE:
 			// SPIFFE is direct-assertion, no redirect flow.
+		case authserver.UpstreamProviderTypeOIDCTrust:
+			// oidc-trust is trust-only, not redirect flow.
 		default:
 			// Unknown types are not redirect-flow.
 		}

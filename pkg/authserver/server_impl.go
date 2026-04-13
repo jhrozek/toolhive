@@ -55,6 +55,11 @@ func defaultUpstreamFactory(ctx context.Context, cfg *UpstreamConfig) (upstream.
 			return nil, fmt.Errorf("trust_domain is required for SPIFFE upstream")
 		}
 		return upstream.NewSPIFFEProvider(cfg.SPIFFETrustDomain), nil
+	case UpstreamProviderTypeOIDCTrust:
+		if cfg.OIDCConfig == nil {
+			return nil, fmt.Errorf("oidc_config is required for oidc-trust upstream")
+		}
+		return upstream.NewOIDCTrustProvider(cfg.OIDCConfig.Issuer, cfg.OIDCConfig.ClientID), nil
 	default:
 		return nil, fmt.Errorf("unsupported upstream type: %s", cfg.Type)
 	}
@@ -129,10 +134,54 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		"auth_code_lifespan", cfg.AuthCodeLifespan,
 	)
 
+	// Build ordered upstream provider list from all configured upstreams.
+	// This must happen before factory creation so that oidc-trust providers
+	// can be extracted to derive TrustedIssuers for the token exchange handler.
+	upstreams := make([]handlers.NamedUpstream, 0, len(cfg.Upstreams))
+	for i := range cfg.Upstreams {
+		upCfg := &cfg.Upstreams[i]
+		slog.Debug("creating upstream IDP provider", "type", upCfg.Type, "name", upCfg.Name)
+		upstreamProvider, upErr := options.upstreamFactory(ctx, upCfg)
+		if upErr != nil {
+			return nil, fmt.Errorf("failed to create upstream provider %q: %w", upCfg.Name, upErr)
+		}
+		upstreams = append(upstreams, handlers.NamedUpstream{
+			Name:     upCfg.Name,
+			Provider: upstreamProvider,
+		})
+		slog.Debug("upstream IDP provider configured", "type", upCfg.Type, "name", upCfg.Name)
+	}
+
+	// Warn if oidc-trust upstreams are configured without SPIFFE (they'll be unused).
+	if cfg.SPIFFETrustDomain.IsZero() {
+		for _, u := range upstreams {
+			if _, ok := u.Provider.(*upstream.OIDCTrustProvider); ok {
+				slog.Warn("oidc-trust upstream configured but SPIFFETrustDomain is not set; "+
+					"trusted issuers will have no effect (token exchange requires SPIFFE)",
+					"upstream", u.Name,
+				)
+				break
+			}
+		}
+	}
+
 	// Build extra factories for extension grant types.
 	var extraFactories []oauthserver.Factory
 	if !cfg.SPIFFETrustDomain.IsZero() {
-		extraFactories = append(extraFactories, tokenexchange.Factory(cfg.DelegationTokenLifespan))
+		// Derive trusted issuers from oidc-trust upstreams for multi-issuer token exchange.
+		var trustedIssuers []tokenexchange.TrustedIssuer
+		for _, u := range upstreams {
+			if tp, ok := u.Provider.(*upstream.OIDCTrustProvider); ok {
+				trustedIssuers = append(trustedIssuers, tokenexchange.TrustedIssuer{
+					IssuerURL:        tp.IssuerURL(),
+					ExpectedAudience: tp.ExpectedAudience(),
+				})
+			}
+		}
+		extraFactories = append(extraFactories, tokenexchange.Factory(tokenexchange.FactoryConfig{
+			DelegationLifespan: cfg.DelegationTokenLifespan,
+			TrustedIssuers:     trustedIssuers,
+		}))
 	}
 
 	// Create fosite provider
@@ -158,22 +207,6 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		slog.Debug("SPIFFE client authentication strategy installed",
 			"trust_domain", cfg.SPIFFETrustDomain.String(),
 		)
-	}
-
-	// Build ordered upstream provider list from all configured upstreams.
-	upstreams := make([]handlers.NamedUpstream, 0, len(cfg.Upstreams))
-	for i := range cfg.Upstreams {
-		upCfg := &cfg.Upstreams[i]
-		slog.Debug("creating upstream IDP provider", "type", upCfg.Type, "name", upCfg.Name)
-		upstreamProvider, upErr := options.upstreamFactory(ctx, upCfg)
-		if upErr != nil {
-			return nil, fmt.Errorf("failed to create upstream provider %q: %w", upCfg.Name, upErr)
-		}
-		upstreams = append(upstreams, handlers.NamedUpstream{
-			Name:     upCfg.Name,
-			Provider: upstreamProvider,
-		})
-		slog.Debug("upstream IDP provider configured", "type", upCfg.Type, "name", upCfg.Name)
 	}
 
 	// Run one-shot bulk migration of legacy data before handler construction.
