@@ -24,6 +24,8 @@ spec:
     - name: agent
       image: spiffe-mcp-agent:latest
       imagePullPolicy: Never
+      securityContext:
+        runAsUser: 0
       args:
         - "Use the fetch tool to retrieve the content of https://httpbin.org/get and summarize what you see."
       env:
@@ -68,6 +70,8 @@ spec:
     - name: agent
       image: spiffe-mcp-agent:latest
       imagePullPolicy: Never
+      securityContext:
+        runAsUser: 0
       args:
         - "Use the fetch tool to retrieve the content of https://httpbin.org/get and summarize what you see."
       env:
