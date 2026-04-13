@@ -1,18 +1,65 @@
 # SPDX-License-Identifier: Apache-2.0
 # Keycloak deployment with TLS for the SPIFFE delegation demo.
 #
-# Uses cert-manager to issue a TLS certificate signed by the same SPIFFE CA
-# that signs agent SVIDs, enabling a shared root of trust.
+# Uses a DEDICATED self-signed CA for Keycloak (NOT the SPIFFE CA).
+# The SPIFFE CA is for workload identity (mTLS between agents and servers).
+# Keycloak's CA is for service TLS — a separate trust domain, just like
+# a public or corporate CA would be in production.
+#
+# The Keycloak CA cert is distributed to auth server pods via ConfigMap
+# (keycloak-ca-bundle in toolhive-system) so the token exchange validator
+# can verify Keycloak's OIDC discovery and JWKS endpoints.
 #
 # Prerequisites:
 #   - Keycloak operator installed (task keycloak:install-operator)
-#   - cert-manager + spiffe-ca-issuer ClusterIssuer (deploy/spiffe-poc/setup.sh)
+#   - cert-manager deployed (deploy/spiffe-poc/setup.sh)
 #   - keycloak namespace exists (created by keycloak operator install)
 #
 # After applying:
 #   - Keycloak available at https://keycloak-dev-service.keycloak.svc.cluster.local:8443
 #   - OIDC discovery: https://keycloak-dev-service.keycloak.svc.cluster.local:8443/realms/toolhive/.well-known/openid-configuration
+#   - Keycloak CA cert in Secret keycloak-ca-secret (key: ca.crt)
 ---
+# Self-signed bootstrap issuer for the Keycloak CA.
+# This is completely separate from the SPIFFE CA infrastructure.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: keycloak-selfsigned-issuer
+spec:
+  selfSigned: {}
+---
+# Root CA certificate for Keycloak TLS.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: keycloak-ca
+  namespace: keycloak
+spec:
+  isCA: true
+  secretName: keycloak-ca-secret
+  commonName: Keycloak Dev CA
+  duration: 87600h   # 10 years
+  renewBefore: 8760h # renew 1 year before expiry
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: keycloak-selfsigned-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+# Issuer backed by the Keycloak CA.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: keycloak-ca-issuer
+  namespace: keycloak
+spec:
+  ca:
+    secretName: keycloak-ca-secret
+---
+# Keycloak server TLS certificate, signed by the Keycloak CA.
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -22,7 +69,6 @@ spec:
   secretName: keycloak-tls-secret
   duration: 8760h    # 1 year
   renewBefore: 720h  # renew 30 days before expiry
-  commonName: keycloak-dev-service.keycloak.svc.cluster.local
   dnsNames:
     - keycloak-dev-service
     - keycloak-dev-service.keycloak.svc
@@ -33,10 +79,11 @@ spec:
   usages:
     - server auth
   issuerRef:
-    name: spiffe-ca-issuer
-    kind: ClusterIssuer
+    name: keycloak-ca-issuer
+    kind: Issuer
     group: cert-manager.io
 ---
+# Keycloak instance with TLS passthrough.
 apiVersion: k8s.keycloak.org/v2alpha1
 kind: Keycloak
 metadata:

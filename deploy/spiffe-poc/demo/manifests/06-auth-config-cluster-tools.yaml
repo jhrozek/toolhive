@@ -8,8 +8,8 @@
 #      and issues a short-lived JWT via client_credentials grant.
 #   4. Cedar policies evaluate the SPIFFE ID (JWT sub claim) for tool authorization.
 #
-# No upstreamProviders are needed: SPIFFE mTLS is the only auth path.
-# The embedded auth server issues tokens directly — no external IdP.
+# The oidc-trust upstream provides JWKS trust for Keycloak token validation
+# during RFC 8693 token exchange (same as 05-auth-config-fetch.yaml).
 ---
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPExternalAuthConfig
@@ -36,4 +36,13 @@ spec:
       clientCASecretRef:
         name: cluster-tools-tls-secret
         key: ca.crt
-    upstreamProviders: []
+    upstreamProviders:
+      - name: keycloak
+        type: oidc-trust
+        oidcConfig:
+          issuerUrl: "https://keycloak-dev-service.keycloak.svc.cluster.local:8443/realms/toolhive"
+          clientId: "mcp-test-client"
+          caBundleConfigMapRef:
+            configMapRef:
+              name: keycloak-ca-bundle
+              key: ca.crt

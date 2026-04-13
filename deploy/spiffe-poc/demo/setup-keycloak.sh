@@ -42,11 +42,24 @@ else
 fi
 
 echo ""
-echo "=== Step 2: Apply TLS certificate + Keycloak CR ==="
+echo "=== Step 2: Apply Keycloak CA + TLS cert + Keycloak CR ==="
 kubectl apply -f "$SCRIPT_DIR/manifests/09-keycloak.yaml"
 
-echo "Waiting for TLS certificate to be ready..."
+echo "Waiting for Keycloak CA certificate to be ready..."
+kubectl wait certificate/keycloak-ca -n "$KEYCLOAK_NS" --for=condition=Ready --timeout=60s
+
+echo "Waiting for Keycloak TLS certificate to be ready..."
 kubectl wait certificate/keycloak-tls -n "$KEYCLOAK_NS" --for=condition=Ready --timeout=60s
+
+echo "Distributing Keycloak CA to toolhive-system namespace..."
+# Extract the Keycloak CA cert from the CA secret and create a ConfigMap
+# that auth server pods can mount for OIDC discovery/JWKS TLS verification.
+kubectl get secret keycloak-ca-secret -n "$KEYCLOAK_NS" \
+  -o jsonpath='{.data.ca\.crt}' | base64 -d > /tmp/keycloak-ca.crt
+kubectl create configmap keycloak-ca-bundle \
+  --from-file=ca.crt=/tmp/keycloak-ca.crt \
+  -n toolhive-system --dry-run=client -o yaml | kubectl apply -f -
+rm -f /tmp/keycloak-ca.crt
 
 echo "Waiting for Keycloak to be ready..."
 kubectl wait keycloak/keycloak-dev -n "$KEYCLOAK_NS" --for=condition=Ready --timeout=300s
