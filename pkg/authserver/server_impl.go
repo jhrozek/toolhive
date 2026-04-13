@@ -19,6 +19,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/spiffe"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/networking"
 )
 
 // server is the internal implementation of the Server interface.
@@ -59,7 +60,7 @@ func defaultUpstreamFactory(ctx context.Context, cfg *UpstreamConfig) (upstream.
 		if cfg.OIDCConfig == nil {
 			return nil, fmt.Errorf("oidc_config is required for oidc-trust upstream")
 		}
-		return upstream.NewOIDCTrustProvider(cfg.OIDCConfig.Issuer, cfg.OIDCConfig.ClientID), nil
+		return upstream.NewOIDCTrustProvider(cfg.OIDCConfig.Issuer, cfg.OIDCConfig.ClientID, cfg.OIDCConfig.CABundlePath), nil
 	default:
 		return nil, fmt.Errorf("unsupported upstream type: %s", cfg.Type)
 	}
@@ -170,17 +171,38 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	if !cfg.SPIFFETrustDomain.IsZero() {
 		// Derive trusted issuers from oidc-trust upstreams for multi-issuer token exchange.
 		var trustedIssuers []tokenexchange.TrustedIssuer
+		var caBundlePath string
 		for _, u := range upstreams {
 			if tp, ok := u.Provider.(*upstream.OIDCTrustProvider); ok {
 				trustedIssuers = append(trustedIssuers, tokenexchange.TrustedIssuer{
 					IssuerURL:        tp.IssuerURL(),
 					ExpectedAudience: tp.ExpectedAudience(),
 				})
+				if caBundlePath == "" && tp.CABundlePath() != "" {
+					caBundlePath = tp.CABundlePath()
+				}
 			}
 		}
+
+		// Build HTTP client with CA trust for OIDC discovery/JWKS fetching.
+		var httpClient *http.Client
+		if caBundlePath != "" {
+			var buildErr error
+			httpClient, buildErr = networking.NewHttpClientBuilder().
+				WithCABundle(caBundlePath).
+				Build()
+			if buildErr != nil {
+				return nil, fmt.Errorf("failed to build HTTP client for token exchange: %w", buildErr)
+			}
+			slog.Debug("token exchange HTTP client configured with CA bundle",
+				"ca_bundle", caBundlePath,
+			)
+		}
+
 		extraFactories = append(extraFactories, tokenexchange.Factory(tokenexchange.FactoryConfig{
 			DelegationLifespan: cfg.DelegationTokenLifespan,
 			TrustedIssuers:     trustedIssuers,
+			HTTPClient:         httpClient,
 		}))
 	}
 

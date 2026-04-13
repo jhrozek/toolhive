@@ -394,6 +394,13 @@ type OIDCUpstreamConfig struct {
 	// that return non-standard claim names in their UserInfo response.
 	// +optional
 	UserInfoOverride *UserInfoConfig `json:"userInfoOverride,omitempty"`
+
+	// CABundleConfigMapRef references a ConfigMap containing the CA certificate
+	// for verifying the OIDC issuer's TLS certificate. Used for oidc-trust
+	// providers where the issuer uses a non-public CA (e.g., internal PKI).
+	// When nil, the system trust store is used (sufficient for public CAs).
+	// +optional
+	CABundleConfigMapRef *CABundleSource `json:"caBundleConfigMapRef,omitempty"`
 }
 
 // OAuth2UpstreamConfig contains configuration for pure OAuth 2.0 providers.
