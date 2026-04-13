@@ -21,7 +21,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NAMESPACE="agents"
 PROXY_URL="https://mcp-fetch-proxy.toolhive-system.svc.cluster.local:8080"
-TASK="Use the fetch tool to retrieve https://httpbin.org/get and summarize the response headers in 2 sentences."
+TASK="You MUST use the fetch tool to retrieve the URL https://httpbin.org/get. Do NOT generate the response from your knowledge - you MUST call the fetch tool. Then summarize the response headers in 2 sentences."
 
 # Colors for output
 GREEN='\033[0;32m'
