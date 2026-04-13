@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: Apache-2.0
+# Keycloak deployment with TLS for the SPIFFE delegation demo.
+#
+# Uses cert-manager to issue a TLS certificate signed by the same SPIFFE CA
+# that signs agent SVIDs, enabling a shared root of trust.
+#
+# Prerequisites:
+#   - Keycloak operator installed (task keycloak:install-operator)
+#   - cert-manager + spiffe-ca-issuer ClusterIssuer (deploy/spiffe-poc/setup.sh)
+#   - keycloak namespace exists (created by keycloak operator install)
+#
+# After applying:
+#   - Keycloak available at https://keycloak-dev-service.keycloak.svc.cluster.local:8443
+#   - OIDC discovery: https://keycloak-dev-service.keycloak.svc.cluster.local:8443/realms/toolhive/.well-known/openid-configuration
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: keycloak-tls
+  namespace: keycloak
+spec:
+  secretName: keycloak-tls-secret
+  duration: 8760h    # 1 year
+  renewBefore: 720h  # renew 30 days before expiry
+  commonName: keycloak-dev-service.keycloak.svc.cluster.local
+  dnsNames:
+    - keycloak-dev-service
+    - keycloak-dev-service.keycloak.svc
+    - keycloak-dev-service.keycloak.svc.cluster.local
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  usages:
+    - server auth
+  issuerRef:
+    name: spiffe-ca-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+apiVersion: k8s.keycloak.org/v2alpha1
+kind: Keycloak
+metadata:
+  name: keycloak-dev
+  namespace: keycloak
+spec:
+  instances: 1
+  startOptimized: false
+  hostname:
+    hostname: keycloak-dev-service.keycloak.svc.cluster.local
+  http:
+    tlsSecret: keycloak-tls-secret
+  db:
+    vendor: dev-file
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+  additionalOptions:
+    - name: health-enabled
+      value: "true"
+    - name: log-level
+      value: INFO
