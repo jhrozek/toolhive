@@ -18,7 +18,7 @@ import os
 import sys
 from pathlib import Path
 
-from spiffe_agent.agent import run_agent
+from spiffe_agent.agent import AuthorizationDeniedError, run_agent
 from spiffe_agent.spiffe_auth import SPIFFECredentials
 
 
@@ -118,6 +118,9 @@ def main() -> None:
         )
     except KeyboardInterrupt:
         sys.exit(130)
+    except AuthorizationDeniedError as exc:
+        print(f"ACCESS DENIED: {exc}", file=sys.stderr)
+        sys.exit(2)
     except Exception:
         logging.getLogger(__name__).exception("Agent run failed")
         sys.exit(1)

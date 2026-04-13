@@ -10,9 +10,10 @@ from __future__ import annotations
 import base64
 import json
 import logging
+from typing import Any
 
-from pydantic_ai import Agent
-from pydantic_ai.mcp import MCPServerStreamableHTTP
+from pydantic_ai import Agent, RunContext
+from pydantic_ai.mcp import CallToolFunc, MCPServerStreamableHTTP, ToolResult
 
 from spiffe_agent.spiffe_auth import (
     SPIFFECredentials,
@@ -22,6 +23,48 @@ from spiffe_agent.spiffe_auth import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class AuthorizationDeniedError(Exception):
+    """Raised when the MCP server returns a 403 authorization denial."""
+
+
+async def _check_authz_denial(
+    ctx: RunContext[Any],
+    call_tool: CallToolFunc,
+    name: str,
+    tool_args: dict[str, Any],
+) -> ToolResult:
+    """Intercept MCP tool results and raise on authorization denial.
+
+    This runs before pydantic-ai passes the result to the LLM, so the
+    LLM cannot hallucinate a response when access is denied.
+    """
+    result = await call_tool(name, tool_args)
+
+    # Check for errors — the result may be an MCP ToolResult object or a dict
+    is_error = getattr(result, "isError", None) or (
+        isinstance(result, dict) and result.get("isError", False)
+    )
+    if is_error:
+        # Extract error text from content
+        content = getattr(result, "content", None) or (
+            result.get("content") if isinstance(result, dict) else None
+        )
+        error_text = ""
+        if content:
+            for part in content:
+                if hasattr(part, "text"):
+                    error_text += part.text
+                elif isinstance(part, dict) and "text" in part:
+                    error_text += part["text"]
+
+        if "403" in error_text or "unauthorized" in error_text.lower():
+            logger.error("Authorization denied for tool '%s': %s", name, error_text)
+            raise AuthorizationDeniedError(
+                f"Tool '{name}' denied by authorization policy: {error_text}"
+            )
+    return result
 
 
 def _log_token_identity(token: str) -> None:
@@ -49,6 +92,57 @@ def _log_token_identity(token: str) -> None:
             logger.info("Delegation: act.sub=%s", act_sub)
     except Exception:
         logger.warning("Failed to decode JWT payload for logging", exc_info=True)
+
+
+async def _preflight_tool_check(client: Any, mcp_url: str) -> list[str]:
+    """Check which tools are authorized by doing a raw MCP session.
+
+    Returns a list of tool names. An empty list means Cedar denied all tools.
+    """
+    # Initialize MCP session
+    init_payload = {
+        "jsonrpc": "2.0",
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "preflight-check", "version": "1.0"},
+        },
+        "id": 1,
+    }
+    resp = await client.post(mcp_url, json=init_payload)
+    session_id = resp.headers.get("mcp-session-id", "")
+
+    if not session_id:
+        logger.warning("No MCP session ID in preflight check")
+        return []
+
+    headers = {"Mcp-Session-Id": session_id}
+
+    # Send initialized notification
+    await client.post(
+        mcp_url,
+        json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+        headers=headers,
+    )
+
+    # List tools
+    list_resp = await client.post(
+        mcp_url,
+        json={"jsonrpc": "2.0", "method": "tools/list", "id": 2},
+        headers=headers,
+    )
+
+    # Parse SSE response — the MCP response is in the event stream
+    tool_names: list[str] = []
+    for line in list_resp.text.splitlines():
+        if line.startswith("data: "):
+            data = json.loads(line[6:])
+            tools = data.get("result", {}).get("tools", [])
+            tool_names = [t["name"] for t in tools]
+            break
+
+    return tool_names
 
 
 async def run_agent(
@@ -110,7 +204,21 @@ async def run_agent(
         mcp_url = f"{proxy_url}/mcp"
         logger.info("Connecting to MCP server at %s", mcp_url)
 
-        server = MCPServerStreamableHTTP(mcp_url, http_client=client)
+        server = MCPServerStreamableHTTP(
+            mcp_url, http_client=client, process_tool_call=_check_authz_denial,
+        )
+
+        # Pre-flight authorization check: verify tools are available.
+        # The MCP proxy filters the tool list through Cedar — if the client
+        # is not authorized to call any tools, the list is empty.
+        # We use the raw httpx client to call tools/list before the LLM runs.
+        preflight_tool_names = await _preflight_tool_check(client, mcp_url)
+        if not preflight_tool_names:
+            raise AuthorizationDeniedError(
+                "No tools available — authorization policy denied access to all tools"
+            )
+        logger.info("Authorized tools: %s", ", ".join(preflight_tool_names))
+
         agent = Agent(model, toolsets=[server])
 
         result = await agent.run(task)
