@@ -53,16 +53,10 @@ spec:
           when {
             principal.claim_sub like "spiffe://toolhive.dev/ns/agents/sa/devops-*"
           };
-        - |
-          // intern-agent: can call the fetch tool
-          permit(
-            principal,
-            action == Action::"call_tool",
-            resource == Tool::"fetch"
-          )
-          when {
-            principal.claim_sub like "spiffe://toolhive.dev/ns/agents/sa/intern-*"
-          };
+        # NOTE: No autonomous call_tool permit for intern-agent on fetch.
+        # Intern CAN access fetch via delegation (see delegation policy below).
+        # This intentional gap enables the demo: same agent, same tool,
+        # different outcome based on identity (autonomous=deny, delegated=permit).
         - |
           // agents namespace: all principals may list tools
           permit(
