@@ -1,0 +1,99 @@
+# SPDX-License-Identifier: Apache-2.0
+# pydantic-ai agent pods. Each pod uses the SPIFFE CSI volume for mTLS
+# credentials and runs an LLM-powered agent that calls MCP tools.
+#
+# Prerequisites:
+#   - agent-configmap.yaml applied (proxy URLs, model config)
+#   - llm-api-secret.yaml applied (OpenAI API key)
+#   - spiffe-mcp-agent:latest loaded into kind
+#
+# The devops-agent has full access to both fetch and cluster-tools.
+# The intern-agent has restricted access (Cedar denies cluster-tools).
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: devops-ai-agent
+  namespace: agents
+  labels:
+    app: devops-ai-agent
+spec:
+  serviceAccountName: devops-agent
+  restartPolicy: Never
+  containers:
+    - name: agent
+      image: spiffe-mcp-agent:latest
+      imagePullPolicy: Never
+      args:
+        - "Use the fetch tool to retrieve the content of https://httpbin.org/get and summarize what you see."
+      env:
+        - name: SPIFFE_PROXY_URL
+          valueFrom:
+            configMapKeyRef:
+              name: agent-config
+              key: SPIFFE_PROXY_URL_FETCH
+        - name: LLM_MODEL
+          valueFrom:
+            configMapKeyRef:
+              name: agent-config
+              key: LLM_MODEL
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: llm-api-key
+              key: OPENAI_API_KEY
+      volumeMounts:
+        - name: spiffe-certs
+          mountPath: /var/run/secrets/spiffe.io
+          readOnly: true
+  volumes:
+    - name: spiffe-certs
+      csi:
+        driver: spiffe.csi.cert-manager.io
+        readOnly: true
+        volumeAttributes:
+          spiffe.csi.cert-manager.io/certificate-duration: "1h"
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: intern-ai-agent
+  namespace: agents
+  labels:
+    app: intern-ai-agent
+spec:
+  serviceAccountName: intern-agent
+  restartPolicy: Never
+  containers:
+    - name: agent
+      image: spiffe-mcp-agent:latest
+      imagePullPolicy: Never
+      args:
+        - "Use the fetch tool to retrieve the content of https://httpbin.org/get and summarize what you see."
+      env:
+        - name: SPIFFE_PROXY_URL
+          valueFrom:
+            configMapKeyRef:
+              name: agent-config
+              key: SPIFFE_PROXY_URL_FETCH
+        - name: LLM_MODEL
+          valueFrom:
+            configMapKeyRef:
+              name: agent-config
+              key: LLM_MODEL
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: llm-api-key
+              key: OPENAI_API_KEY
+      volumeMounts:
+        - name: spiffe-certs
+          mountPath: /var/run/secrets/spiffe.io
+          readOnly: true
+  volumes:
+    - name: spiffe-certs
+      csi:
+        driver: spiffe.csi.cert-manager.io
+        readOnly: true
+        volumeAttributes:
+          spiffe.csi.cert-manager.io/certificate-duration: "1h"

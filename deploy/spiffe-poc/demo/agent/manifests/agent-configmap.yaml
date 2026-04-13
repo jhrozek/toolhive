@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-config
+  namespace: agents
+data:
+  SPIFFE_PROXY_URL_FETCH: "https://mcp-fetch-proxy.toolhive-system.svc.cluster.local:8080"
+  SPIFFE_PROXY_URL_CLUSTER_TOOLS: "https://mcp-cluster-tools-proxy.toolhive-system.svc.cluster.local:8080"
+  LLM_MODEL: "openai:gpt-4o-mini"
