@@ -28,8 +28,8 @@ spiffe://toolhive.dev/ns/untrusted/sa/rogue-agent
 
 **What to say:**
 
-> Three AI agent workloads. None of them were given a password, an API
-> key, or a secret. Each received a cryptographic identity automatically
+> Three AI agent workloads. None of them were given credentials for MCP
+> authentication. Each received a cryptographic identity automatically
 > at startup — the cert-manager CSI driver issues an X.509-SVID when
 > Kubernetes schedules the pod. The SPIFFE ID encodes namespace and
 > service account. When a pod dies, the identity dies with it.

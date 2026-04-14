@@ -239,7 +239,7 @@ act1_identity() {
     step "Act 1 — Identity is automatic"
     blank
     info "Three AI agent workloads are running in this cluster."
-    info "None of them were given a password, an API key, or a secret."
+    info "None of them were given credentials for MCP authentication."
     info "Each received a cryptographic identity automatically at startup."
     blank
     info "SPIFFE identity (URI SAN) injected into each pod by the CSI driver:"
@@ -657,6 +657,10 @@ act5_sidecar() {
     # -----------------------------------------------------------------------
     info "Evidence 3: MCP tool call through sidecar (devops-user → fetch)"
     blank
+    info "  The user logs in via Keycloak (OIDC). In production, the harness"
+    info "  or CI pipeline performs the login and injects the token. The agent"
+    info "  passes it in the Authorization header — it's just a Bearer token."
+    blank
 
     # Get a fresh devops-user token
     kubectl --context "${CONTEXT}" port-forward svc/keycloak-dev-service 8443:8443 -n keycloak &>/dev/null &
@@ -672,13 +676,24 @@ act5_sidecar() {
         return
     fi
 
-    # Initialize MCP session through the sidecar
-    kubectl --context "${CONTEXT}" exec -n "${AGENTS_NS}" sidecar-test -c agent -- \
-        sh -c "curl -s --max-time 15 -o /dev/null \
+    result "  User token (devops-user from Keycloak)" "${TOKEN_OK}"
+    info "  Token email: devops-user@example.com"
+    blank
+
+    dim "  Agent sends: curl -H 'Authorization: Bearer <user-token>' http://localhost:8080/mcp"
+    blank
+
+    # Initialize MCP session through the sidecar, capture HTTP status
+    local init_status
+    init_status=$(kubectl --context "${CONTEXT}" exec -n "${AGENTS_NS}" sidecar-test -c agent -- \
+        sh -c "curl -s --max-time 15 -o /dev/null -w '%{http_code}' \
         -H 'Content-Type: application/json' \
         -H \"Authorization: Bearer ${user_token}\" \
         -d '{\"jsonrpc\":\"2.0\",\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"demo\",\"version\":\"1.0\"}},\"id\":1}' \
-        'http://localhost:8080/mcp'" 2>/dev/null
+        'http://localhost:8080/mcp'" 2>/dev/null || echo "000")
+
+    result "  MCP initialize via sidecar → upstream" "HTTP ${init_status}"
+    blank
 
     # Small delay for logs to flush
     sleep 1
