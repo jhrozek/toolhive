@@ -102,6 +102,7 @@ For unmodified agents (Claude Code, Codex), a sidecar proxy handles SPIFFE boots
 - **Top-level vs upstream SPIFFE config** — The CRD has both `spiffeTrustDomain` (top-level, controls mTLS middleware) and `spiffe` as an upstream provider type (per-upstream identity source). The demo currently uses the top-level fields; migration to upstream providers is a future step.
 - **Sidecar uses `MTLSWebClientConfig`** — Server certs have DNS SANs (not SPIFFE URI SANs), so server verification uses standard web PKI while client auth uses SPIFFE SVIDs.
 - **`singleflight` in exchanger** — Deduplicates concurrent bootstrap and exchange requests to prevent thundering herd.
+- **Why an embedded AS instead of IdP federation?** — Entra Agent ID, Okta, and Keycloak each offer agent identity flows, but none produce RFC 8693 `act` claims or preserve SPIFFE URIs in delegated tokens. The embedded AS provides standards-based delegation with per-workload SPIFFE identity granularity that no single IdP offers. See [idp-comparison.md](idp-comparison.md) for the full analysis.
 
 ## Quick start
 
