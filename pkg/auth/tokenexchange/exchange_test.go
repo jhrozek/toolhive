@@ -1399,6 +1399,288 @@ func TestExchangeToken_BasicAuthURLEncoding(t *testing.T) {
 	assert.NotNil(t, resp)
 }
 
+// TestTokenSource_WithActorToken tests that actor token fields are included in the exchange request
+// when ActorTokenProvider is configured.
+func TestTokenSource_WithActorToken(t *testing.T) {
+	t.Parallel()
+
+	var capturedForm url.Values
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		err := r.ParseForm()
+		require.NoError(t, err)
+
+		capturedForm = r.Form
+
+		resp := newResponse().withAccessToken("exchanged-token").build()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	config := &ExchangeConfig{
+		TokenURL:     server.URL,
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+		SubjectTokenProvider: func() (string, error) {
+			return testSubjectToken, nil
+		},
+		ActorTokenProvider: func() (string, error) {
+			return "my-actor-token", nil
+		},
+		ActorTokenType: "access_token",
+	}
+
+	ctx := context.Background()
+	ts := config.TokenSource(ctx)
+	token, err := ts.Token()
+
+	require.NoError(t, err)
+	assert.Equal(t, "exchanged-token", token.AccessToken)
+
+	// Verify actor token fields were sent
+	assert.Equal(t, "my-actor-token", capturedForm.Get("actor_token"))
+	assert.Equal(t, tokenTypeAccessToken, capturedForm.Get("actor_token_type"))
+}
+
+// TestTokenSource_WithoutActorToken verifies that when ActorTokenProvider is nil,
+// no actor_token field is included in the form data.
+func TestTokenSource_WithoutActorToken(t *testing.T) {
+	t.Parallel()
+
+	var capturedForm url.Values
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		err := r.ParseForm()
+		require.NoError(t, err)
+
+		capturedForm = r.Form
+
+		resp := newResponse().withAccessToken("exchanged-token").build()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	config := &ExchangeConfig{
+		TokenURL:     server.URL,
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+		SubjectTokenProvider: func() (string, error) {
+			return testSubjectToken, nil
+		},
+		// ActorTokenProvider is nil - no delegation
+	}
+
+	ctx := context.Background()
+	ts := config.TokenSource(ctx)
+	token, err := ts.Token()
+
+	require.NoError(t, err)
+	assert.Equal(t, "exchanged-token", token.AccessToken)
+
+	// Verify actor token fields were NOT sent
+	assert.Empty(t, capturedForm.Get("actor_token"), "actor_token should not be present when ActorTokenProvider is nil")
+	assert.Empty(t, capturedForm.Get("actor_token_type"), "actor_token_type should not be present when ActorTokenProvider is nil")
+}
+
+// TestTokenSource_ActorTokenProviderError tests error handling when the actor token provider fails.
+func TestTokenSource_ActorTokenProviderError(t *testing.T) {
+	t.Parallel()
+
+	providerErr := errors.New("actor token fetch failed")
+	config := &ExchangeConfig{
+		TokenURL:     "https://example.com/token",
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+		SubjectTokenProvider: func() (string, error) {
+			return testSubjectToken, nil
+		},
+		ActorTokenProvider: func() (string, error) {
+			return "", providerErr
+		},
+	}
+
+	ctx := context.Background()
+	ts := config.TokenSource(ctx)
+	token, err := ts.Token()
+
+	require.Error(t, err)
+	assert.Nil(t, token)
+	assert.Contains(t, err.Error(), "failed to get actor token")
+	assert.ErrorIs(t, err, providerErr)
+}
+
+// TestTokenSource_ActorTokenTypeDefault tests that ActorTokenType defaults to access_token
+// when ActorTokenProvider is set but ActorTokenType is empty.
+func TestTokenSource_ActorTokenTypeDefault(t *testing.T) {
+	t.Parallel()
+
+	var capturedForm url.Values
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		err := r.ParseForm()
+		require.NoError(t, err)
+
+		capturedForm = r.Form
+
+		resp := newResponse().withAccessToken("exchanged-token").build()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	config := &ExchangeConfig{
+		TokenURL:     server.URL,
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+		SubjectTokenProvider: func() (string, error) {
+			return testSubjectToken, nil
+		},
+		ActorTokenProvider: func() (string, error) {
+			return "my-actor-token", nil
+		},
+		// ActorTokenType is empty - should default to access_token
+	}
+
+	ctx := context.Background()
+	ts := config.TokenSource(ctx)
+	token, err := ts.Token()
+
+	require.NoError(t, err)
+	assert.Equal(t, "exchanged-token", token.AccessToken)
+
+	// Verify the default actor token type was used
+	assert.Equal(t, "my-actor-token", capturedForm.Get("actor_token"))
+	assert.Equal(t, tokenTypeAccessToken, capturedForm.Get("actor_token_type"))
+}
+
+// TestTokenSource_ActorTokenTypeNormalization tests that various ActorTokenType formats are normalized.
+func TestTokenSource_ActorTokenTypeNormalization(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		actorTokenType    string
+		expectedTokenType string
+		wantErr           bool
+	}{
+		{
+			name:              "short form access_token",
+			actorTokenType:    "access_token",
+			expectedTokenType: tokenTypeAccessToken,
+		},
+		{
+			name:              "short form id_token",
+			actorTokenType:    "id_token",
+			expectedTokenType: tokenTypeIDToken,
+		},
+		{
+			name:              "short form jwt",
+			actorTokenType:    "jwt",
+			expectedTokenType: tokenTypeJWT,
+		},
+		{
+			name:              "full URN access_token",
+			actorTokenType:    tokenTypeAccessToken,
+			expectedTokenType: tokenTypeAccessToken,
+		},
+		{
+			name:           "invalid type",
+			actorTokenType: "invalid_type",
+			wantErr:        true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				err := r.ParseForm()
+				require.NoError(t, err)
+
+				assert.Equal(t, tt.expectedTokenType, r.Form.Get("actor_token_type"))
+
+				resp := newResponse().withAccessToken("exchanged-token").build()
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(resp)
+			}))
+			defer server.Close()
+
+			config := &ExchangeConfig{
+				TokenURL:     server.URL,
+				ClientID:     "test-client-id",
+				ClientSecret: "test-client-secret",
+				SubjectTokenProvider: func() (string, error) {
+					return testSubjectToken, nil
+				},
+				ActorTokenProvider: func() (string, error) {
+					return "my-actor-token", nil
+				},
+				ActorTokenType: tt.actorTokenType,
+			}
+
+			ctx := context.Background()
+			ts := config.TokenSource(ctx)
+			token, err := ts.Token()
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Nil(t, token)
+				assert.Contains(t, err.Error(), "invalid ActorTokenType")
+			} else {
+				require.NoError(t, err)
+				assert.NotNil(t, token)
+			}
+		})
+	}
+}
+
+// TestTokenSource_WithResource tests that the Resource field is included in the exchange request.
+func TestTokenSource_WithResource(t *testing.T) {
+	t.Parallel()
+
+	var capturedForm url.Values
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		err := r.ParseForm()
+		require.NoError(t, err)
+
+		capturedForm = r.Form
+
+		resp := newResponse().withAccessToken("exchanged-token").build()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	config := &ExchangeConfig{
+		TokenURL:     server.URL,
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+		SubjectTokenProvider: func() (string, error) {
+			return testSubjectToken, nil
+		},
+		Resource: "https://resource.example.com/api",
+	}
+
+	ctx := context.Background()
+	ts := config.TokenSource(ctx)
+	token, err := ts.Token()
+
+	require.NoError(t, err)
+	assert.Equal(t, "exchanged-token", token.AccessToken)
+
+	// Verify resource field was sent
+	assert.Equal(t, "https://resource.example.com/api", capturedForm.Get("resource"))
+}
+
 func TestExchangeConfig_Validate_SubjectTokenType(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

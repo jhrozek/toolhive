@@ -226,6 +226,20 @@ type ExchangeConfig struct {
 	// and also to lazy-load the token only when needed, load from dynamic sources, etc.
 	SubjectTokenProvider func() (string, error)
 
+	// ActorTokenProvider is a function that returns the actor token for delegation scenarios.
+	// When set, the exchange request includes actor_token and actor_token_type per RFC 8693.
+	// The actor token represents the identity of the party acting on behalf of the subject.
+	// If nil, no actor token is included (non-delegation exchange).
+	ActorTokenProvider func() (string, error)
+
+	// ActorTokenType specifies the type of the actor token.
+	// Common values: "access_token", "id_token", "jwt".
+	// If empty and ActorTokenProvider is set, defaults to "access_token".
+	ActorTokenType string
+
+	// Resource is the target resource URI for the exchanged token (optional per RFC 8707)
+	Resource string
+
 	// HTTPClient is the HTTP client to use for token exchange requests.
 	// If nil, defaultHTTPClient will be used.
 	HTTPClient *http.Client
@@ -300,6 +314,28 @@ func (ts *tokenSource) Token() (*oauth2.Token, error) {
 		RequestedTokenType: tokenTypeAccessToken,
 		SubjectToken:       subjectToken,
 		SubjectTokenType:   subjectTokenType,
+		Resource:           conf.Resource,
+	}
+
+	// Add actor token for delegation if configured
+	if conf.ActorTokenProvider != nil {
+		actorToken, err := conf.ActorTokenProvider()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get actor token: %w", err)
+		}
+		actorTokenType := conf.ActorTokenType
+		if actorTokenType == "" {
+			actorTokenType = tokenTypeAccessToken
+		}
+		// Normalize the actor token type
+		normalizedActorType, err := NormalizeTokenType(actorTokenType)
+		if err != nil {
+			return nil, fmt.Errorf("invalid ActorTokenType: %w", err)
+		}
+		request.ActingParty = &actingParty{
+			ActorToken:     actorToken,
+			ActorTokenType: normalizedActorType,
+		}
 	}
 
 	clientAuth := clientAuthentication{
