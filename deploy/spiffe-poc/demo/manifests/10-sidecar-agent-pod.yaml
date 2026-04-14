@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: Apache-2.0
+# Test pod for the SPIFFE delegation sidecar proxy.
+#
+# Two containers:
+#   - agent: curlimages/curl, makes MCP calls to localhost:8080 (plain HTTP)
+#   - spiffe-proxy: thv-agent-proxy sidecar, forwards to fetch MCP server via mTLS
+#
+# The agent container has NO SPIFFE credentials — only the sidecar has
+# the CSI volume mounted. The sidecar performs token exchange transparently.
+#
+# Usage:
+#   kubectl apply -f deploy/spiffe-poc/demo/manifests/10-sidecar-agent-pod.yaml
+#   # Then run the test: ./deploy/spiffe-poc/demo/test-sidecar-delegation.sh
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sidecar-test
+  namespace: agents
+  labels:
+    app: sidecar-test
+spec:
+  serviceAccountName: devops-agent
+  restartPolicy: Never
+  containers:
+    # Unmodified agent — only talks to localhost, no SPIFFE creds
+    - name: agent
+      image: curlimages/curl:latest
+      command: ["sleep", "infinity"]
+      securityContext:
+        runAsUser: 0
+
+    # SPIFFE delegation sidecar proxy
+    - name: spiffe-proxy
+      image: thv-agent-proxy:latest
+      imagePullPolicy: Never
+      securityContext:
+        runAsUser: 0
+      args:
+        - run
+        - --upstream-url=https://mcp-fetch-proxy.toolhive-system.svc.cluster.local:8080
+        - --trust-domain=toolhive.dev
+        - --listen-addr=:8080
+        - --subject-token-type=id_token
+      volumeMounts:
+        - name: spiffe-certs
+          mountPath: /var/run/secrets/spiffe.io
+          readOnly: true
+  volumes:
+    - name: spiffe-certs
+      csi:
+        driver: spiffe.csi.cert-manager.io
+        readOnly: true
+        volumeAttributes:
+          spiffe.csi.cert-manager.io/certificate-duration: "1h"
