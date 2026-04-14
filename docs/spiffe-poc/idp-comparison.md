@@ -300,6 +300,131 @@ In practice, a hybrid is possible: Entra handles identity and delegation, ToolHi
 
 ---
 
+## Deep dive: SPIFFE/SPIRE → Okta on generic Kubernetes
+
+This section walks through integrating SPIRE workload identity with Okta for agent authentication and delegation. Okta's support is significantly more constrained than Entra's.
+
+### Phase 1: Okta tenant setup
+
+**1. Register a service app:**
+
+Create an API Services application with `private_key_jwt` authentication. Register SPIRE's JWKS so Okta can validate JWT-SVIDs:
+
+```bash
+curl -X POST https://{yourOktaDomain}/oauth2/v1/clients \
+  -d '{
+    "client_name": "spiffe-coding-agent",
+    "application_type": "service",
+    "grant_types": ["client_credentials"],
+    "token_endpoint_auth_method": "private_key_jwt",
+    "jwks_uri": "https://spire-oidc.example.org/keys"
+  }'
+```
+
+Using `jwks_uri` (instead of static `jwks`) enables automatic key rotation — Okta re-fetches when it encounters an unknown `kid`.
+
+**Important: Okta's OIDC IdP federation is browser-redirect only.** Do NOT add SPIRE as an external Identity Provider — that path is for human authentication, not M2M. The correct path is `private_key_jwt` on a service app.
+
+**2. Custom authorization server:**
+
+Required for custom scopes. Create via Admin Console: Security → API → Add Authorization Server. Define scopes the agent needs (e.g., `agent.execute`, `mcp.access`).
+
+### Phase 2: Workload authentication (the hard part)
+
+**Critical mismatch:** Okta's `private_key_jwt` requires `iss` and `sub` in the client assertion to equal the Okta **client ID**. But a SPIRE JWT-SVID sets `sub=spiffe://example.org/ns/agents/sa/coding-agent` and `iss=https://spire-oidc.example.org`. A raw JWT-SVID cannot be used as a `client_assertion`.
+
+**Workaround:** The workload must mint a properly-formed assertion using the SPIRE private key but with Okta-required claim values:
+
+| Claim | SPIRE JWT-SVID value | Okta requirement |
+|-------|---------------------|------------------|
+| `iss` | `https://spire-oidc.example.org` | Must be the Okta client ID |
+| `sub` | `spiffe://example.org/ns/agents/sa/coding-agent` | Must be the Okta client ID |
+| `aud` | Configurable | Must be the Okta token endpoint URL |
+
+This means the SPIFFE identity is used only for **key material** (proof of possession), not as a direct identity assertion. The SPIFFE ID does not appear in the Okta token flow at all — it must be re-injected later via hooks.
+
+**Token request:**
+
+```http
+POST /oauth2/default/v1/token
+
+grant_type=client_credentials
+&scope=agent.execute
+&client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer
+&client_assertion={jwt-signed-by-spire-key-with-okta-claims}
+```
+
+### Phase 3: Delegation (user + agent)
+
+Okta's AI agent token exchange flow (documented in 2026.02.0 release):
+
+**Step 1:** User authenticates via browser OIDC → ID token.
+
+**Step 2:** Agent exchanges user ID token for an **ID-JAG** (Identity Assertion JWT, Okta-proprietary):
+
+```http
+POST /oauth2/v1/token
+
+grant_type=urn:ietf:params:oauth:grant-type:token-exchange
+&requested_token_type=urn:ietf:params:oauth:token-type:id-jag
+&subject_token={user-id-token}
+&subject_token_type=urn:ietf:params:oauth:token-type:id_token
+&client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer
+&client_assertion={agent-jwt}
+&audience=https://example.okta.com/oauth2/default
+```
+
+**Step 3:** Agent exchanges ID-JAG for a final access token:
+
+```http
+POST /oauth2/default/v1/token
+
+grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer
+&assertion={id-jag}
+&client_assertion={agent-jwt}
+```
+
+**No native `act` claim.** The ID-JAG and final access token do not carry RFC 8693 `act` semantics. The agent identity appears only as `cid` (Okta client ID) in the final token.
+
+**Workaround for `act` claim:** Use a **token inline hook** on the custom authorization server. When the ID-JAG is exchanged for an access token, the hook fires and can inject custom claims:
+
+```json
+{
+  "commands": [{
+    "type": "com.okta.tokens.claims.add",
+    "value": {
+      "act": {"sub": "spiffe://example.org/ns/agents/sa/coding-agent"}
+    }
+  }]
+}
+```
+
+This requires running your own hook service that maps Okta client IDs back to SPIFFE IDs.
+
+### Phase 4: Constraints vs Entra
+
+| Constraint | Entra | Okta |
+|-----------|-------|------|
+| Raw JWT-SVID as credential | Yes (WIF accepts any OIDC JWT) | No (`iss`/`sub` must match client ID) |
+| Native `act` claim | No (uses `xms_act_fct`) | No (requires token inline hook) |
+| Multi-agent wildcard | Yes (Flexible FIC preview) | No (one service app per agent) |
+| SPIFFE ID in token | Lost after WIF exchange | Never enters Okta token flow |
+| Key rotation | Automatic via JWKS fetch | Automatic if using `jwks_uri` |
+| Public JWKS required | Yes | Yes (for `jwks_uri`) |
+
+### What Okta fundamentally cannot do
+
+- **Accept SPIFFE identity natively** — Okta sees the SPIRE key material, not the SPIFFE ID. The workload identity is always an Okta client ID.
+- **Produce RFC 8693 delegation tokens** — ID-JAG is proprietary, no `act` claim without hooks.
+- **Dynamic workload registration** — every agent needs a pre-registered Okta service app. No trust-domain-level trust.
+- **Private JWKS endpoint** — Okta SaaS must reach the JWKS URL.
+
+### When Okta works anyway
+
+For shops already on Okta with a small number of agent types, the `private_key_jwt` + AI agent token exchange + inline hook approach is functional. The SPIFFE integration is a "key bridge" (use SPIRE for key material and attestation, but Okta owns the identity model). This is viable but operationally heavier than Entra WIF and architecturally weaker than a custom AS.
+
+---
+
 ## The bottom line
 
 The embedded AS provides value precisely at the intersection of three capabilities no single IdP offers:
