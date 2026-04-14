@@ -164,6 +164,142 @@ When the agent needs tokens for upstream services (GitHub API, Azure resources, 
 
 ---
 
+## Deep dive: SPIFFE/SPIRE → Entra Agent ID on generic Kubernetes
+
+This section walks through the complete integration of SPIRE workload identity with Entra Agent ID on a non-AKS Kubernetes cluster. This is the most viable alternative to ToolHive's embedded AS for Entra-centric environments.
+
+### Prerequisites
+
+- Generic K8s cluster (kind, EKS, GKE, or bare metal — NOT AKS)
+- SPIRE deployed (SPIRE Server + SPIRE Agent DaemonSet)
+- SPIRE OIDC Discovery Provider enabled and exposed on public HTTPS (e.g., `https://spire-oidc.example.org`)
+- Workloads receive SVIDs via the SPIRE Workload API
+
+### Phase 1: Entra tenant setup (one-time)
+
+**1. Create an Agent Identity Blueprint:**
+
+```http
+POST https://graph.microsoft.com/beta/agentIdentityBlueprints
+{
+  "displayName": "coding-agent-blueprint",
+  "identifierUri": "api://agents.example.com/coding-agent"
+}
+```
+
+No redirect URIs needed — this is a workload credential flow.
+
+**2. Register SPIRE as a trusted issuer (Federated Identity Credential):**
+
+```bash
+az ad app federated-credential create \
+  --id <blueprint-obj-id> \
+  --parameters '{
+    "name": "spire-coding-agent",
+    "issuer": "https://spire-oidc.example.org",
+    "subject": "spiffe://example.org/ns/agents/sa/coding-agent",
+    "audiences": ["api://AzureADTokenExchange"]
+  }'
+```
+
+For fleets of agents, use Flexible FIC (preview) to match all agents with one credential:
+
+```json
+{
+  "name": "spire-agents-fleet",
+  "issuer": "https://spire-oidc.example.org",
+  "claimsMatchingExpression": {
+    "value": "claims['sub'] matches 'spiffe://example.org/ns/agents/sa/*'",
+    "languageVersion": 1
+  },
+  "audiences": ["api://AzureADTokenExchange"]
+}
+```
+
+**3. Create agent identity instances** under the blueprint (one per running agent):
+
+```http
+POST https://graph.microsoft.com/beta/serviceprincipals/Microsoft.Graph.AgentIdentity
+Authorization: Bearer <blueprint-access-token>
+{
+  "displayName": "coding-agent-instance-1",
+  "agentIdentityBlueprintId": "<blueprint-app-id>"
+}
+```
+
+**4. Grant delegated API permissions** on the blueprint app registration for downstream APIs (Microsoft Graph, custom MCP server API), then admin-consent.
+
+### Phase 2: Workload authentication (runtime)
+
+The workload does NOT use the X.509-SVID directly against Entra. It must fetch a **JWT-SVID** from SPIRE with the correct audience:
+
+```go
+svid, _ := workloadClient.FetchJWTSVID(ctx, jwtsvid.Params{
+    Audience: "api://AzureADTokenExchange",
+})
+jwtToken := svid.Marshal()
+```
+
+The JWT-SVID has `iss=https://spire-oidc.example.org`, `sub=spiffe://example.org/ns/agents/sa/coding-agent`, `aud=api://AzureADTokenExchange`.
+
+Present it to Entra:
+
+```http
+POST https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token
+
+grant_type=client_credentials
+&client_id=<blueprint-app-id>
+&scope=api://AzureADTokenExchange/.default
+&client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer
+&client_assertion=<jwt-svid>
+```
+
+Entra fetches SPIRE's JWKS, validates the JWT, and returns an Entra app token (T1).
+
+### Phase 3: Agent delegation (user + agent)
+
+User authenticates via browser OIDC, gets token `Tc` with `aud=<blueprint-app-id>`. The agent performs Agent OBO:
+
+```http
+POST https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token
+
+grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer
+&client_id=<agent-identity-id>
+&client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer
+&client_assertion=<T1>
+&assertion=<Tc>
+&requested_token_use=on_behalf_of
+&scope=https://graph.microsoft.com/User.Read
+```
+
+Result: a delegated token with `oid=user`, `azp=agent-identity-id`, `xms_act_fct=11` (AgentIdentity as actor).
+
+For a custom MCP server API, change `scope` to `api://my-toolhive-mcp-server/.default`.
+
+### Phase 4: Non-AKS constraints
+
+| Constraint | Impact |
+|-----------|--------|
+| SPIRE OIDC provider must be **public HTTPS** with real TLS cert | Need Ingress/LB. Kind/air-gapped clusters need tunneling (ngrok, Cloudflare Tunnel). |
+| Key rotation | Automatic — Entra fetches JWKS dynamically at validation time |
+| Signing algorithm | RS256 required. SPIRE defaults to RS256 for JWT-SVIDs. |
+| No managed identities | Must use app registrations + FIC, not Azure IMDS |
+| No AKS webhook injection | Pod must call SPIRE Workload API directly (no projected token file) |
+| 20 FIC limit per app | Use Flexible FIC (preview) with wildcard matching for agent fleets |
+
+### What this replaces vs what it doesn't
+
+This flow replaces ToolHive's embedded AS for the authentication and delegation token issuance. Entra handles identity, federation, and OBO.
+
+It does **NOT** replace:
+- Cedar policy evaluation (Entra has no concept of MCP tools or Cedar)
+- Per-tool authorization (Entra scopes are coarse; Cedar policies are per-tool, per-argument)
+- The `act` claim semantics (Entra uses `xms_act_fct`, not RFC 8693 `act`)
+
+In practice, a hybrid is possible: Entra handles identity and delegation, ToolHive evaluates Cedar policies against the Entra-issued token's claims (`oid`, `azp`, `xms_act_fct`). The embedded AS is no longer needed for token issuance, but Cedar evaluation still runs at the MCP proxy.
+
+---
+
 ## The bottom line
 
 The embedded AS provides value precisely at the intersection of three capabilities no single IdP offers:
