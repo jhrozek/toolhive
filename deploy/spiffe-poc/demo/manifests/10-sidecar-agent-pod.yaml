@@ -20,7 +20,7 @@ metadata:
   labels:
     app: sidecar-test
 spec:
-  serviceAccountName: devops-agent
+  serviceAccountName: coding-agent
   restartPolicy: Never
   containers:
     # Unmodified agent — only talks to localhost, no SPIFFE creds

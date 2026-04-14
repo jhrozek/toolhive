@@ -736,7 +736,10 @@ act5_sidecar() {
         -l app.kubernetes.io/name=mcp-fetch-proxy -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
 
     if [ -n "${fetch_proxy}" ]; then
-        info "Evidence 5: Cedar evaluation on the MCP server (fetch proxy logs)"
+        info "Evidence 5: What ToolHive received (fetch proxy Cedar logs)"
+        blank
+        info "  The MCP server decoded the delegated JWT and passed its"
+        info "  claims to Cedar for policy evaluation:"
         blank
 
         local cedar_ctx
@@ -744,14 +747,17 @@ act5_sidecar() {
             | grep "cedar context" | tail -1)
 
         if [ -n "${cedar_ctx}" ]; then
-            local ctx_email ctx_act ctx_sub
-            ctx_email=$(printf '%s' "${cedar_ctx}" | jq -r '.context.claim_email // empty' 2>/dev/null)
-            ctx_act=$(printf '%s' "${cedar_ctx}" | jq -r '.context.claim_act.sub // empty' 2>/dev/null)
+            local ctx_email ctx_act ctx_sub ctx_name ctx_client_id
             ctx_sub=$(printf '%s' "${cedar_ctx}" | jq -r '.context.claim_sub // empty' 2>/dev/null)
-            dim "  Cedar evaluated:"
-            printf "         %-18s %s\n" "claim_sub:" "${ctx_sub}"
+            ctx_email=$(printf '%s' "${cedar_ctx}" | jq -r '.context.claim_email // empty' 2>/dev/null)
+            ctx_name=$(printf '%s' "${cedar_ctx}" | jq -r '.context.claim_name // empty' 2>/dev/null)
+            ctx_act=$(printf '%s' "${cedar_ctx}" | jq -r '.context.claim_act.sub // empty' 2>/dev/null)
+            ctx_client_id=$(printf '%s' "${cedar_ctx}" | jq -r '.context.claim_client_id // empty' 2>/dev/null)
+            printf "         %-18s %s  ${DIM}(Keycloak user)${NC}\n" "claim_sub:" "${ctx_sub}"
             printf "         %-18s %s\n" "claim_email:" "${ctx_email}"
-            printf "         %-18s %s\n" "claim_act.sub:" "${ctx_act}"
+            printf "         %-18s %s\n" "claim_name:" "${ctx_name}"
+            printf "         %-18s %s  ${DIM}(sidecar SPIFFE ID)${NC}\n" "claim_act.sub:" "${ctx_act}"
+            printf "         %-18s %s\n" "claim_client_id:" "${ctx_client_id}"
         fi
 
         local cedar_decision
