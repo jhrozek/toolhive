@@ -9,9 +9,10 @@
 #   - Cedar authorization policies controlling per-tool access
 #
 # Prerequisites:
-#   - kubectl configured and kind-spiffe-poc cluster running
+#   - kubectl configured and kind-toolhive cluster running
 #   - All demo manifests applied (see deploy/spiffe-poc/demo/README.md)
-#   - python3 available on PATH (for JSON parsing)
+#   - Keycloak deployed (./setup-keycloak.sh) for delegation demo (Act 4)
+#   - jq and jwt-cli available on PATH
 #
 # Usage:
 #   ./deploy/spiffe-poc/demo/run-demo.sh
@@ -66,10 +67,16 @@ header() {
     printf "%s\n" "$(printf '%0.s-' $(seq 1 72))"
 }
 
+pause() {
+    printf "\n    ${DIM}[Press Enter to continue]${NC}"
+    read -r
+}
+
 # ---------------------------------------------------------------------------
 # Cluster helpers
 # ---------------------------------------------------------------------------
-CONTEXT="kind-spiffe-poc"
+CONTEXT="kind-toolhive"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OPERATOR_NS="toolhive-system"
 AGENTS_NS="agents"
 UNTRUSTED_NS="untrusted"
@@ -104,34 +111,52 @@ get_token() {
         "${proxy_url}/oauth/token"
 }
 
-# Extract a field from a JSON string using python3.
+# Extract a field from a JSON string using jq.
 # json_field <json> <field>  — prints the value or empty string on failure.
 json_field() {
     local json=$1 field=$2
-    printf '%s' "${json}" | python3 -c \
-        "import sys,json; d=json.load(sys.stdin); print(d.get('${field}',''))" 2>/dev/null || true
+    printf '%s' "${json}" | jq -r ".${field} // empty" 2>/dev/null || true
 }
 
-# decode_jwt <token> — decodes and pretty-prints the JWT payload claims.
+# decode_jwt <token> [field ...] — decodes a JWT and pretty-prints selected claims.
+# Without field args, prints sub, iss, aud, client_id, exp.
 decode_jwt() {
-    local token=$1
-    printf '%s' "${token}" | python3 -c "
-import sys, json, base64
-token = sys.stdin.read().strip()
-payload = token.split('.')[1]
-# Add padding
-payload += '=' * (4 - len(payload) % 4)
-claims = json.loads(base64.urlsafe_b64decode(payload))
-# Print selected claims in a readable format
-print('         sub:       ' + claims.get('sub', ''))
-print('         iss:       ' + claims.get('iss', ''))
-aud = claims.get('aud', [])
-print('         aud:       ' + (aud[0] if isinstance(aud, list) and aud else str(aud)))
-print('         client_id: ' + claims.get('client_id', ''))
-import datetime
-exp = claims.get('exp', 0)
-print('         exp:       ' + datetime.datetime.fromtimestamp(exp).strftime('%H:%M:%S') + ' (short-lived)')
-" 2>/dev/null || true
+    local token=$1; shift
+    local claims
+    claims=$(printf '%s' "${token}" | jwt decode --ignore-exp -j - 2>/dev/null) || return
+    local payload
+    payload=$(printf '%s' "${claims}" | jq -r '.payload')
+
+    if [ $# -eq 0 ]; then
+        set -- sub iss aud client_id exp
+    fi
+
+    for f in "$@"; do
+        local val
+        val=$(printf '%s' "${payload}" | jq -r "
+            if .${f} == null then \"\"
+            elif (.${f} | type) == \"array\" then .${f}[0]
+            elif (.${f} | type) == \"object\" then (.${f} | tostring)
+            else .${f} | tostring
+            end" 2>/dev/null)
+        if [ "${f}" = "exp" ] && [ -n "${val}" ] && [ "${val}" != "" ]; then
+            val=$(date -r "${val}" +%H:%M:%S 2>/dev/null || echo "${val}")
+            val="${val} (short-lived)"
+        fi
+        printf "         %-12s %s\n" "${f}:" "${val}"
+    done
+}
+
+# Perform RFC 8693 token exchange: user token + agent JWT → delegated JWT.
+# exchange_token <pod> <namespace> <spiffe-id> <proxy-url> <user-token> <agent-token>
+# Prints the raw JSON response.
+exchange_token() {
+    local pod=$1 ns=$2 spiffe_id=$3 proxy_url=$4 user_token=$5 agent_token=$6
+    agent_curl "${pod}" "${ns}" \
+        -X POST \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&subject_token=${user_token}&subject_token_type=urn:ietf:params:oauth:token-type:id_token&actor_token=${agent_token}&actor_token_type=urn:ietf:params:oauth:token-type:access_token&client_id=${spiffe_id}&resource=${proxy_url}" \
+        "${proxy_url}/oauth/token"
 }
 
 # ---------------------------------------------------------------------------
@@ -148,9 +173,15 @@ check_prerequisites() {
         ok=false
     fi
 
-    # python3 must be available (used for JSON parsing in curl responses)
-    if ! command -v python3 &>/dev/null; then
-        printf "    ${RED}ERROR: python3 not found on PATH${NC}\n"
+    # jq must be available (used for JSON parsing)
+    if ! command -v jq &>/dev/null; then
+        printf "    ${RED}ERROR: jq not found on PATH${NC}\n"
+        ok=false
+    fi
+
+    # jwt CLI must be available (used for decoding JWTs)
+    if ! command -v jwt &>/dev/null; then
+        printf "    ${RED}ERROR: jwt not found on PATH (brew install jwt-cli)${NC}\n"
         ok=false
     fi
 
@@ -292,7 +323,7 @@ act2_authentication() {
         result "  rogue-agent   -> fetch proxy  [${err:-unknown}]" "${TOKEN_DENIED}"
         blank
         info "  Raw denial response from the auth server:"
-        dim "    $(printf '%s' "${resp}" | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin), indent=2).replace(chr(10), chr(10)+'    '))" 2>/dev/null || printf '%s' "${resp}")"
+        dim "    $(printf '%s' "${resp}" | jq '.' 2>/dev/null | sed 's/^/    /' || printf '%s' "${resp}")"
     fi
 
     blank
@@ -303,22 +334,7 @@ act2_authentication() {
     info "Decoding a granted token (devops-agent, fetch proxy):"
     blank
     if [ -n "${DEVOPS_FETCH_TOKEN}" ]; then
-        # Decode the JWT payload (middle section) without verifying the signature
-        local payload
-        payload=$(printf '%s' "${DEVOPS_FETCH_TOKEN}" \
-            | cut -d. -f2 \
-            | python3 -c "
-import sys, base64, json
-raw = sys.stdin.read().strip()
-padded = raw + '=' * ((4 - len(raw) % 4) % 4)
-data = json.loads(base64.urlsafe_b64decode(padded))
-for k in ['sub', 'iss', 'aud', 'exp']:
-    if k in data:
-        print(f'  {k}: {data[k]}')
-" 2>/dev/null || echo "  (could not decode token)")
-        printf "%s\n" "${payload}" | while IFS= read -r line; do
-            dim "${line}"
-        done
+        decode_jwt "${DEVOPS_FETCH_TOKEN}" sub iss aud exp
     else
         dim "  (no token — devops-agent authentication failed)"
     fi
@@ -337,23 +353,21 @@ act3_authorization() {
     info "Cedar policies on each MCP proxy determine what each agent can do."
     blank
 
-    # Print the fetch policy
-    info "Cedar policy — fetch proxy:"
+    # Print autonomous policies (delegation policies shown in Act 4)
+    info "Cedar autonomous policies — fetch proxy:"
     blank
     dim '  // devops-agent: full access to all tools'
     dim '  permit(principal, action == Action::"call_tool", resource)'
     dim '    when { principal.claim_sub like "spiffe://toolhive.dev/ns/agents/sa/devops-*" };'
     blank
-    dim '  // intern-agent: restricted to fetch_url only'
-    dim '  permit(principal, action == Action::"call_tool", resource == Tool::"fetch_url")'
-    dim '    when { principal.claim_sub like "spiffe://toolhive.dev/ns/agents/sa/intern-*" };'
+    dim '  // intern-agent: NO autonomous call_tool permit (delegation only — see Act 4)'
     blank
     dim '  // all agents: may list available tools'
     dim '  permit(principal, action == Action::"list_tools", resource)'
     dim '    when { principal.claim_sub like "spiffe://toolhive.dev/ns/agents/*" };'
     blank
 
-    info "Cedar policy — cluster-tools proxy:"
+    info "Cedar autonomous policies — cluster-tools proxy:"
     blank
     dim '  // Only devops-agent may call cluster tools'
     dim '  permit(principal, action == Action::"call_tool", resource)'
@@ -391,7 +405,7 @@ act3_authorization() {
 
     # fetch rows
     _matrix_row "devops-agent" "fetch"         "ALLOW" "ALLOW (all tools)"  "${DEVOPS_FETCH_TOKEN}"
-    _matrix_row "intern-agent" "fetch"         "ALLOW" "ALLOW (fetch_url)"  "${INTERN_FETCH_TOKEN}"
+    _matrix_row "intern-agent" "fetch"         "ALLOW" "DENY (no permit)"   "${INTERN_FETCH_TOKEN}"
     _matrix_row "rogue-agent"  "fetch"         "DENY"  "DENY (no token)"    "${ROGUE_FETCH_TOKEN}"
     printf "\n"
     _matrix_row "devops-agent" "cluster-tools" "ALLOW" "ALLOW (all tools)"  "${DEVOPS_CT_TOKEN}"
@@ -400,7 +414,8 @@ act3_authorization() {
 
     blank
     info "devops-agent:  full access everywhere — trusted, privileged workload"
-    info "intern-agent:  limited access — policy narrows the blast radius"
+    info "intern-agent:  can list tools, but cannot call any autonomously"
+    info "               (delegation can unlock access — see Act 4)"
     info "rogue-agent:   no access — stopped before it can even get a token"
 }
 
@@ -428,12 +443,171 @@ _matrix_row() {
 }
 
 # ---------------------------------------------------------------------------
+# Act 4: Delegation — human + agent identity
+# ---------------------------------------------------------------------------
+act4_delegation() {
+    step "Act 4 — Delegation: human + agent identity"
+    blank
+    info "So far every agent acted on its own — using only its SPIFFE identity."
+    info "But what if a human wants to delegate authority to an agent?"
+    blank
+    info "Delegation combines two identities into one token via RFC 8693:"
+    info "  human (Keycloak ID token)  +  agent (SPIFFE JWT)  →  delegated JWT"
+    blank
+    info "Recall from Act 3: intern-agent CANNOT call tools on the fetch proxy"
+    info "autonomously. But with delegation from the right user — it can."
+    blank
+
+    # -----------------------------------------------------------------------
+    # Keycloak user tokens
+    # -----------------------------------------------------------------------
+    info "Fetching Keycloak user tokens..."
+    blank
+
+    kubectl --context "${CONTEXT}" port-forward svc/keycloak-dev-service 8443:8443 -n keycloak &>/dev/null &
+    local kc_pf=$!
+    sleep 3
+
+    local devops_user_token intern_user_token
+    devops_user_token=$("${SCRIPT_DIR}/get-user-token.sh" devops-user devops123 id_token 2>/dev/null || true)
+    intern_user_token=$("${SCRIPT_DIR}/get-user-token.sh" intern-user intern123 id_token 2>/dev/null || true)
+
+    kill "${kc_pf}" 2>/dev/null || true
+    wait "${kc_pf}" 2>/dev/null || true
+
+    if [ -z "${devops_user_token}" ] || [ -z "${intern_user_token}" ]; then
+        result "  Keycloak token fetch" "${TOKEN_DENIED}"
+        info "  Is Keycloak running? Run ./setup-keycloak.sh first."
+        return
+    fi
+
+    result "  devops-user  Keycloak ID token" "${TOKEN_OK}"
+    result "  intern-user  Keycloak ID token" "${TOKEN_OK}"
+    blank
+
+    info "  Keycloak ID token claims (devops-user):"
+    decode_jwt "${devops_user_token}" sub email iss exp
+    blank
+
+    # -----------------------------------------------------------------------
+    # Token exchange
+    # -----------------------------------------------------------------------
+    info "Step 1: intern-agent obtains its own SPIFFE JWT (already shown in Act 2)"
+    blank
+    # Reuse INTERN_FETCH_TOKEN from act2 if available, otherwise re-acquire
+    if [ -z "${INTERN_FETCH_TOKEN:-}" ]; then
+        local resp
+        resp=$(get_token intern-agent "${AGENTS_NS}" \
+            "spiffe://${TRUST_DOMAIN}/ns/${AGENTS_NS}/sa/intern-agent" "${FETCH_URL}")
+        INTERN_FETCH_TOKEN=$(json_field "${resp}" "access_token")
+    fi
+
+    info "Step 2: RFC 8693 token exchange — intern-agent + devops-user"
+    blank
+    dim "  POST ${FETCH_URL}/oauth/token"
+    dim "    grant_type         = urn:ietf:params:oauth:grant-type:token-exchange"
+    dim "    subject_token      = <devops-user Keycloak ID token>"
+    dim "    subject_token_type = urn:ietf:params:oauth:token-type:id_token"
+    dim "    actor_token        = <intern-agent SPIFFE JWT>"
+    dim "    actor_token_type   = urn:ietf:params:oauth:token-type:access_token"
+    blank
+
+    local devops_delegated="" intern_delegated=""
+
+    # Exchange: intern-agent + devops-user → delegated JWT
+    local resp
+    resp=$(exchange_token intern-agent "${AGENTS_NS}" \
+        "spiffe://${TRUST_DOMAIN}/ns/${AGENTS_NS}/sa/intern-agent" \
+        "${FETCH_URL}" "${devops_user_token}" "${INTERN_FETCH_TOKEN}")
+    devops_delegated=$(json_field "${resp}" "access_token")
+
+    if [ -n "${devops_delegated}" ]; then
+        result "  intern-agent + devops-user → delegated JWT" "${TOKEN_OK}"
+        blank
+        info "  Delegated JWT claims (composite identity):"
+        decode_jwt "${devops_delegated}" sub email act iss client_id exp
+    else
+        local err
+        err=$(json_field "${resp}" "error_description")
+        result "  intern-agent + devops-user → [${err:-error}]" "${TOKEN_DENIED}"
+    fi
+    blank
+
+    # Exchange: intern-agent + intern-user → delegated JWT
+    resp=$(exchange_token intern-agent "${AGENTS_NS}" \
+        "spiffe://${TRUST_DOMAIN}/ns/${AGENTS_NS}/sa/intern-agent" \
+        "${FETCH_URL}" "${intern_user_token}" "${INTERN_FETCH_TOKEN}")
+    intern_delegated=$(json_field "${resp}" "access_token")
+
+    if [ -n "${intern_delegated}" ]; then
+        result "  intern-agent + intern-user → delegated JWT" "${TOKEN_OK}"
+    else
+        local err
+        err=$(json_field "${resp}" "error_description")
+        result "  intern-agent + intern-user → [${err:-error}]" "${TOKEN_DENIED}"
+    fi
+    blank
+
+    info "Both exchanges succeed — the auth server issues a composite JWT for both."
+    info "The difference is what Cedar does with the claims."
+    blank
+
+    # -----------------------------------------------------------------------
+    # Cedar delegation policies
+    # -----------------------------------------------------------------------
+    info "Cedar delegation policies — fetch proxy:"
+    blank
+    dim '  // devops-user can access all tools via any trusted agent'
+    dim '  permit(principal, action == Action::"call_tool", resource)'
+    dim '    when {'
+    dim '      context has claim_act &&'
+    dim '      context has claim_email &&'
+    dim '      context.claim_email == "devops-user@example.com" &&'
+    dim '      context.claim_act.sub like "spiffe://toolhive.dev/ns/agents/sa/*"'
+    dim '    };'
+    blank
+    dim '  // No delegation permit for intern-user → implicit DENY'
+    blank
+
+    # -----------------------------------------------------------------------
+    # Delegation matrix
+    # -----------------------------------------------------------------------
+    header "Delegation authorization matrix (fetch proxy)"
+    printf "\n"
+    printf "    %-22s  %-22s  %-14s  %-14s\n" \
+        "User (delegator)" "Agent (actor)" "list_tools" "call_tool"
+    printf "    %-22s  %-22s  %-14s  %-14s\n" \
+        "----------------------" "----------------------" "--------------" "--------------"
+
+    # devops-agent autonomous (recap from Act 3)
+    printf "    %-22s  %-22s  " "(autonomous)" "devops-agent"
+    printf "%-26b  %b\n" "${GREEN}ALLOW${NC}" "${GREEN}ALLOW${NC}"
+
+    # intern-agent autonomous (recap from Act 3)
+    printf "    %-22s  %-22s  " "(autonomous)" "intern-agent"
+    printf "%-26b  %b\n" "${GREEN}ALLOW${NC}" "${RED}DENY${NC}"
+
+    # intern-agent + devops-user delegation
+    printf "    %-22s  %-22s  " "devops-user" "intern-agent"
+    printf "%-26b  %b\n" "${GREEN}ALLOW${NC}" "${GREEN}ALLOW${NC}"
+
+    # intern-agent + intern-user delegation
+    printf "    %-22s  %-22s  " "intern-user" "intern-agent"
+    printf "%-26b  %b\n" "${GREEN}ALLOW${NC}" "${RED}DENY${NC}"
+
+    blank
+    info "Same agent (intern-agent). Same tool (fetch)."
+    info "The difference is WHO delegated: Cedar checks the composite identity."
+    info "devops-user@example.com has a permit rule; intern-user@example.com does not."
+}
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 summary() {
     step "Summary"
     blank
-    info "What just happened — in three steps:"
+    info "What just happened — in four steps:"
     blank
     info "1. Identity:       SPIFFE SVIDs provisioned automatically at pod startup."
     info "                   Format: spiffe://<trust-domain>/ns/<ns>/sa/<sa>"
@@ -446,11 +620,16 @@ summary() {
     info "                   and issues a short-lived JWT (sub = SPIFFE ID)."
     blank
     info "3. Authorization:  Cedar policies evaluated on every MCP call."
-    info "                   policy matches on claim_sub (the SPIFFE ID)."
+    info "                   Policy matches on claim_sub (the SPIFFE ID)."
     info "                   Granularity: per-tool, per-workload, zero shared secrets."
     blank
+    info "4. Delegation:     RFC 8693 token exchange merges human + agent identity."
+    info "                   The delegated JWT carries both identities (act claim)."
+    info "                   Cedar evaluates the composite: who delegated, which agent,"
+    info "                   which tool — all in one policy decision."
+    blank
     printf "    ${BOLD}Result:${NC} least-privilege access for AI agents, enforced cryptographically.\n"
-    printf "    ${BOLD}        No service mesh required. No separate identity provider.\n"
+    printf "    ${BOLD}        Autonomous or delegated — same policy framework, same audit trail.${NC}\n"
     blank
 }
 
@@ -471,8 +650,13 @@ main() {
 
     check_prerequisites
     act1_identity
+    pause
     act2_authentication
+    pause
     act3_authorization
+    pause
+    act4_delegation
+    pause
     summary
 }
 

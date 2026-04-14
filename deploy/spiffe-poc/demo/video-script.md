@@ -1,248 +1,171 @@
-# SPIFFE PoC -- Video Recording Script
+# SPIFFE PoC — Presenter Narration Notes
 
-Timed narration script for a ~2 minute terminal screen recording.
-The presenter pastes commands from `video-commands.sh` while narrating.
+Companion to `run-demo.sh`. The script runs each act, then pauses
+with `[Press Enter to continue]`. Narrate during the pause, then
+advance.
 
-**Setup:** Terminal at 120 columns, font size large enough for recording.
+**Cluster:** `kind-toolhive` | **Trust domain:** `toolhive.dev`
+
+**Prerequisites:** `kubectl`, `jq`, `jwt` (jwt-cli), `openssl` on PATH.
+Keycloak deployed (`./setup-keycloak.sh`) for Act 4.
 
 ```bash
-# Off-camera: bounce pods, copy helper scripts
-deploy/spiffe-poc/demo/video-commands.sh --setup
-
-# On-camera: start recording, then run
-deploy/spiffe-poc/demo/video-commands.sh
+./deploy/spiffe-poc/demo/run-demo.sh
 ```
-
-The script runs each section's commands, then pauses with
-`[Press Enter to continue]`. Narrate during the pause, then
-press Enter to advance.
 
 ---
 
-## [0:00-0:15] Opening -- Three agents, zero secrets
+## Act 1 — Identity is automatic
+
+**What the audience sees:** Three agent pods, each with a SPIFFE ID
+extracted from its X.509 certificate (URI SAN).
+
+```
+spiffe://toolhive.dev/ns/agents/sa/devops-agent
+spiffe://toolhive.dev/ns/agents/sa/intern-agent
+spiffe://toolhive.dev/ns/untrusted/sa/rogue-agent
+```
 
 **What to say:**
-> "Three agents. Two MCP servers. Zero secrets. Every pod got a
-> cryptographic identity at startup -- automatically, using SPIFFE."
 
-**What to type:**
-
-```
-kubectl --context kind-spiffe-poc get mcpserver -n toolhive-system
-kubectl get mcpserver fetch -o jsonpath='{.spec.authzConfig.inline.policies}' | jq -r '.[]'
-kubectl --context kind-spiffe-poc get pods -n agents
-kubectl --context kind-spiffe-poc get pods -n untrusted
-```
-
-**What the audience sees:** Two MCPServer resources (`fetch` and
-`cluster-tools`), then the Cedar policies showing:
-- `devops-*` → full `call_tool` access
-- `intern-*` → `call_tool` only on `fetch_url`
-- `agents/*` → `list_tools`
-
-Then three agent pods -- `devops-agent` and `intern-agent` in `agents`,
-`rogue-agent` in `untrusted`. The audience now knows the rules before
-seeing the enforcement.
+> Three AI agent workloads. None of them were given a password, an API
+> key, or a secret. Each received a cryptographic identity automatically
+> at startup — the cert-manager CSI driver issues an X.509-SVID when
+> Kubernetes schedules the pod. The SPIFFE ID encodes namespace and
+> service account. When a pod dies, the identity dies with it.
+>
+> In production, SPIRE replaces the CSI driver with stronger attestation —
+> node identity verified against cloud instance metadata, workloads
+> verified by container image digest. The certificates look identical;
+> the attestation chain gets deeper.
 
 ---
 
-## [0:10-0:30] Identity -- SPIFFE ID from the certificate
+## Act 2 — Authentication via workload identity
+
+**What the audience sees:** Token requests from all three agents.
+devops-agent and intern-agent get tokens (green badges); rogue-agent
+is denied (red badge + raw JSON error). Decoded JWT showing
+`sub = spiffe://toolhive.dev/ns/agents/sa/devops-agent`.
 
 **What to say:**
-> "Each pod's X.509 certificate carries a SPIFFE ID -- namespace and
-> service account, baked in cryptographically. Today, cert-manager issues
-> these using Kubernetes as the trust anchor. That gives us mTLS --
-> credentials that can't be stolen from a log or an env var -- and a
-> standardized identity format for cross-cluster federation."
 
-**What to type:**
-
-```
-kubectl --context kind-spiffe-poc exec -n agents devops-agent -- \
-  cat /var/run/secrets/spiffe.io/tls.crt \
-  | openssl x509 -noout -ext subjectAltName 2>/dev/null | grep URI
-```
-
-**What the audience sees:**
-
-```
-URI:spiffe://toolhive.dev/ns/agents/sa/devops-agent
-```
-
-**Say (over the output):**
-> "But the architecture is designed for SPIRE. With SPIRE, you get deeper
-> attestation -- node identity verified against cloud instance metadata,
-> workloads verified by container image digest. SPIRE already has
-> experimental Sigstore integration -- only pods running signed images
-> from your CI pipeline get an identity. The application code doesn't
-> change."
-
----
-
-## [0:30-0:55] Authentication -- Certificate becomes a JWT
-
-**What to say:**
-> "The agent presents this certificate via mTLS to the MCP proxy. The
+> Each agent presents its X.509-SVID via mTLS to the MCP proxy. The
 > embedded auth server validates the SPIFFE ID and issues a short-lived
-> JWT. We extended the auth server with the IETF's
-> draft-ietf-oauth-spiffe-client-auth -- the trust domain is modeled as
-> another upstream identity source, alongside OIDC. Same auth server,
-> two identity flows."
-
-**What to type (get token + decode):**
-
-```
-TOKEN=$(kubectl --context kind-spiffe-poc exec -n agents devops-agent -- \
-  curl -sk --cert /var/run/secrets/spiffe.io/tls.crt \
-  --key /var/run/secrets/spiffe.io/tls.key \
-  --cacert /var/run/secrets/spiffe.io/ca.crt \
-  -X POST -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "grant_type=client_credentials&client_id=spiffe://toolhive.dev/ns/agents/sa/devops-agent&resource=https://mcp-fetch-proxy.toolhive-system.svc.cluster.local:8080" \
-  https://mcp-fetch-proxy.toolhive-system.svc.cluster.local:8080/oauth/token \
-  | jq -r .access_token)
-jwt decode "$TOKEN"
-```
-
-**What the audience sees:** Color-coded JWT with header (ES256 algorithm)
-and claims including:
-
-```json
-{
-  "sub": "spiffe://toolhive.dev/ns/agents/sa/devops-agent",
-  "aud": ["https://mcp-fetch-proxy.toolhive-system.svc.cluster.local:8080"],
-  "exp": 1774612671
-}
-```
-
-**Say (over the output):**
-> "The `sub` claim IS the SPIFFE ID. Cedar policies match on it
-> directly. No username database, no role mapping. Under the hood, we
-> generalized the auth server's upstream interface -- OIDC providers use
-> a redirect flow, SPIFFE uses a direct assertion. The operator wires
-> the TLS certificates and trust bundles into the proxy via CRD fields."
+> JWT — the certificate became an OAuth token.
+>
+> The registration policy is a namespace allow-list: only the `agents`
+> namespace may obtain tokens. rogue-agent's SVID is valid — signed by
+> the same CA — but its SPIFFE ID is in `untrusted`. Rejected before
+> any token is issued. No 403, no Cedar — it never gets that far.
+>
+> Look at the JWT `sub` claim — it IS the SPIFFE ID. Cedar policies
+> evaluate it directly. No username database, no role mapping.
 
 ---
 
-## [0:55-1:10] Tool call -- devops-agent calls a tool
+## Act 3 — Policy controls access
+
+**What the audience sees:** Cedar policies for both proxies (autonomous
+only — delegation policies come in Act 4). Then an authorization matrix:
+
+| Principal    | Server        | list_tools | call_tool        |
+|--------------|---------------|------------|------------------|
+| devops-agent | fetch         | ALLOW      | ALLOW            |
+| intern-agent | fetch         | ALLOW      | **DENY**         |
+| rogue-agent  | fetch         | DENY       | DENY (no token)  |
+| devops-agent | cluster-tools | ALLOW      | ALLOW            |
+| intern-agent | cluster-tools | ALLOW      | **DENY**         |
+| rogue-agent  | cluster-tools | DENY       | DENY (no token)  |
 
 **What to say:**
-> "Now devops-agent calls a tool. The helper script handles the full
-> MCP handshake -- mTLS authentication, session init, tool call.
-> Running with `sh -x` so you can see each step."
 
-**What to type** (mcp-call.sh pre-copied in preamble):
-
-```
-kubectl --context kind-spiffe-poc exec -n agents devops-agent -- \
-  sh -x /tmp/mcp-call.sh \
-  https://mcp-fetch-proxy.toolhive-system.svc.cluster.local:8080 \
-  fetch '{"url":"https://httpbin.org/get","raw":true,"max_length":200}'
-```
-
-**What the audience sees:** Each step traced with `+`: the mTLS
-token fetch, the MCP initialize, the tool call. Then the JSON-RPC
-result with httpbin response data.
-
-**Say (over the output):**
-> "SPIFFE certificate to OAuth token to MCP tool call -- that's the
-> full chain. No API keys, no secrets. The identity came from the
-> infrastructure."
+> Having a token is not the same as having permission. Cedar policies on
+> each proxy determine what each agent can do.
+>
+> devops-agent has full access everywhere — it's a trusted, privileged
+> workload. intern-agent can list tools on both servers but cannot call
+> any autonomously. rogue-agent never got a token, so it can't even list.
+>
+> Three agents, three tiers: full access, list-only, total rejection.
+> But notice intern-agent is stuck — it can see what tools exist but
+> can't use them on its own. That's intentional. The next act shows
+> how delegation unlocks access.
 
 ---
 
-## [1:10-1:25] Cedar denial -- intern-agent blocked on cluster-tools
-
-**What to say:**
-> "Now intern-agent tries to call cluster-tools. Same namespace,
-> valid certificate, gets a token -- but the Cedar policy on
-> cluster-tools only permits devops. Intern can use fetch but
-> not the cluster tools."
-
-**What to type:**
-
-```
-kubectl --context kind-spiffe-poc exec -n agents intern-agent -- \
-  sh /tmp/mcp-call.sh \
-  https://mcp-cluster-tools-proxy.toolhive-system.svc.cluster.local:8080 \
-  echo '{"message":"hello"}'
-```
+## Act 4 — Delegation: human + agent identity
 
 **What the audience sees:**
 
-```json
-{"Result":null,"Error":{"code":403,"message":"Unauthorized"},"ID":{}}
-```
+1. Keycloak user tokens fetched (devops-user, intern-user)
+2. Token exchange request parameters (RFC 8693)
+3. Two delegated JWTs issued — one per user
+4. Decoded composite JWT showing `sub`, `email`, `act.sub`
+5. Cedar delegation policies
+6. Delegation matrix showing permit/deny by delegator
 
-**Say (over the output):**
-> "403. Token was issued, session was created, but Cedar said no.
-> Two layers of defense: registration policy controls who gets in,
-> Cedar controls what they can do per server. Same agent, different
-> servers, different permissions."
-
----
-
-## [1:25-1:40] Registration denial -- rogue-agent stopped at the door
-
-**What to say:**
-> "And the rogue agent. Same cluster, valid certificate -- but the
-> SPIFFE ID is in the `untrusted` namespace. The registration policy
-> rejects it before a token is ever issued."
-
-**What to type:**
-
-```
-kubectl --context kind-spiffe-poc exec -n untrusted rogue-agent -- \
-  curl -sk --cert /var/run/secrets/spiffe.io/tls.crt \
-  --key /var/run/secrets/spiffe.io/tls.key \
-  --cacert /var/run/secrets/spiffe.io/ca.crt \
-  -X POST -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "grant_type=client_credentials&client_id=spiffe://toolhive.dev/ns/untrusted/sa/rogue-agent&resource=https://mcp-fetch-proxy.toolhive-system.svc.cluster.local:8080" \
-  https://mcp-fetch-proxy.toolhive-system.svc.cluster.local:8080/oauth/token
-```
-
-**What the audience sees:**
-
-```json
-{"error":"unauthorized","error_description":"SPIFFE ID is not authorized to register as a client"}
-```
-
-**Say (over the output):**
-> "No token, no access. Three agents, three outcomes: full access,
-> tool-level restriction, total rejection. Identity is not the same
-> as access."
-
----
-
-## [1:40-1:55] Closing -- Where this is headed
+| User (delegator) | Agent (actor) | list_tools | call_tool |
+|------------------|---------------|------------|-----------|
+| (autonomous)     | devops-agent  | ALLOW      | ALLOW     |
+| (autonomous)     | intern-agent  | ALLOW      | **DENY**  |
+| devops-user      | intern-agent  | ALLOW      | ALLOW     |
+| intern-user      | intern-agent  | ALLOW      | **DENY**  |
 
 **What to say:**
-> "This is draft-ietf-oauth-spiffe-client-auth running on ToolHive.
-> Next: RFC 8693 delegation -- when an agent acts on behalf of a user,
-> both identities travel in one token with an `act` claim. And a real
-> agent demo -- a pydantic-ai agent calling MCP tools, authenticated
-> end-to-end via SPIFFE. Plus SPIRE integration for image provenance
-> attestation via Sigstore. The IETF's agent auth draft recommends
-> exactly this architecture."
 
-**What to type:** Nothing. The script displays the summary table and
-next steps automatically.
+> So far every agent acted alone. But what if a human wants to delegate
+> authority to an agent? RFC 8693 token exchange combines two identities
+> into one token.
+>
+> The agent already has its SPIFFE JWT from Act 2. The human authenticates
+> to Keycloak — a standard OIDC IdP. The agent sends both tokens to the
+> auth server's token exchange endpoint: the user's ID token as the
+> subject, its own JWT as the actor. The auth server issues a delegated
+> JWT with a composite identity.
+>
+> Look at the claims. `sub` is the Keycloak user UUID. `email` is the
+> human's email. And `act.sub` is the agent's SPIFFE ID — who is acting
+> on behalf of the human. Both identities travel in one token.
+>
+> Now Cedar evaluates the composite. The policy checks `claim_email` and
+> `claim_act.sub` together. devops-user@example.com has a permit rule —
+> intern-agent can now call fetch tools on their behalf. intern-user has
+> no such rule — same agent, same tool, denied.
+>
+> The key insight: the intern-agent couldn't do this autonomously. The
+> human's identity is what unlocked access. And the audit trail shows
+> exactly who delegated to whom.
 
 ---
 
-## Tips for recording
+## Summary
 
-- Pre-run the commands once so responses are cached / warmed up.
-  Cold cert validation can add a couple seconds.
-- Paste commands rather than typing -- the video is about the output,
-  not watching someone type.
-- Pause briefly after each output appears so the audience can read it.
-- If a command wraps in your terminal, widen the window or reduce font
-  size. The token-fetch command is the longest; consider pre-pasting it.
-- The JWT decode is the moment of insight -- slow down there.
-- Total runtime ~2 minutes. Each segment is self-contained; if you
-  need to cut for time, the Identity segment's SPIRE paragraph can be
-  trimmed to one sentence.
-- Copy `mcp-call.sh` into both agent pods during the preamble
-  (off-camera) so on-camera you just run `kubectl exec ... sh -x`.
-- The three-beat escalation (devops succeeds → intern denied by Cedar
-  → rogue denied at registration) is the narrative arc. Don't rush it.
+**What the audience sees:** Four numbered points.
+
+**What to say:**
+
+> Four layers, one framework.
+>
+> Identity — SPIFFE SVIDs, provisioned automatically.
+> Authentication — X.509 mTLS to OAuth JWT, no passwords.
+> Authorization — Cedar policies, per-tool, per-workload.
+> Delegation — RFC 8693 token exchange, composite identity.
+>
+> Autonomous or delegated, the same policy framework applies. Same
+> audit trail. Least-privilege access for AI agents, enforced
+> cryptographically. No service mesh required.
+
+---
+
+## Tips
+
+- Pre-run once to warm up TLS handshakes and Keycloak port-forward.
+- The JWT decode is the moment of insight in Act 2 — slow down there.
+- The delegated JWT decode in Act 4 is the second moment — point out
+  `sub` vs `act.sub`.
+- The three-beat escalation (devops succeeds / intern denied / rogue
+  rejected) builds tension for the Act 4 payoff where intern gets
+  unlocked via delegation.
+- If time is short, the SPIRE callout in Act 1 can be trimmed to one
+  sentence.
