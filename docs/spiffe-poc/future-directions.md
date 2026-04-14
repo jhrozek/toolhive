@@ -252,58 +252,83 @@ Current logging uses `slog.Debug` and `slog.Warn`. Production should emit these 
 
 ---
 
-## 4. Upstream Interface Evolution
+## 4. Completed (moved from future directions)
 
-The `IdentityProvider` -> `RedirectFlowProvider` + `DirectAssertionProvider` split (`pkg/authserver/upstream/types.go`, `pkg/authserver/upstream/doc.go`) is complete. Remaining work:
+The following items were listed as future work and are now implemented:
 
-**SPIFFE upstream type in CRD enum**
-
-The operator CRD's upstream provider type enum (`cmd/thv-operator/api/v1alpha1/`) only includes `oidc` and `oauth2`. Adding `spiffe` as a first-class upstream type would:
-- Allow the operator to configure the `SPIFFEProvider` directly from the CRD.
-- Remove the need for the placeholder OAuth2 upstream in SPIFFE-only deployments.
-- Enable validation that SPIFFE upstream requires `spiffeTrustDomain` and `tls` config.
-
-**Remove placeholder OAuth2 upstream from demo configs**
-
-The demo manifests in `deploy/spiffe-poc/demo/manifests/` include an OAuth2 upstream provider that is not used in the SPIFFE flow. Once the CRD supports SPIFFE as a standalone upstream type, the demo configs should use only the SPIFFE upstream.
-
-**Dynamic discovery metadata**
-
-`buildOAuthMetadata()` in `pkg/authserver/server/handlers/discovery.go:95` hardcodes `grant_types_supported` to include `authorization_code`, `refresh_token`, and `client_credentials`. When only SPIFFE is configured (no redirect flow providers), the discovery metadata should reflect this:
-- `grant_types_supported`: only `["client_credentials"]`
-- `response_types_supported`: empty or omitted
-- `authorization_endpoint`: omitted (no redirect flows)
-- `token_endpoint_auth_methods_supported`: `["spiffe"]` only
-
-This makes the discovery document an accurate reflection of what the server actually supports, which helps clients auto-configure correctly.
+- **SPIFFE upstream type in CRD enum** — `UpstreamProviderTypeSPIFFE` added with `SPIFFEUpstreamConfig` struct, webhook validation, and CRD-to-runtime converter. See Phase 8 in [implementation.md](implementation.md).
+- **RFC 8693 user delegation with `act` claims** — Token exchange handler, multi-issuer validator, oidc-trust upstream, Keycloak integration. See Phase 7 in [implementation.md](implementation.md).
+- **Real agent demo with pydantic-ai** — Python agent with SPIFFE mTLS, token exchange, and delegation. See `deploy/spiffe-poc/demo/agent/`.
+- **Sidecar proxy for unmodified agents** — `thv-agent-proxy` binary with credential source, token exchanger, and reverse proxy. See Phase 9 in [implementation.md](implementation.md).
 
 ---
 
-## 5. Next Demo Milestones
+## 4. Manifest Migration: Top-Level to Upstream Provider
 
-These are the concrete next steps for an external-facing demo beyond the current PoC.
+The demo manifests (`deploy/spiffe-poc/demo/manifests/05-auth-config-*.yaml`) still use the top-level `spiffeTrustDomain` and `spiffeClientPolicy` fields on `EmbeddedAuthServerConfig`:
 
-### Real agent demo with pydantic-ai
+```yaml
+# Current (top-level fields)
+spec:
+  type: embeddedAuthServer
+  embeddedAuthServer:
+    spiffeTrustDomain: "toolhive.dev"
+    spiffeClientPolicy:
+      allowedIdentities:
+        - namespace: agents
+          serviceAccount: "*"
+    upstreamProviders:
+      - name: keycloak
+        type: oidc-trust
+```
 
-The current demo uses `curl` from inside pods. A compelling external demo would show a **pydantic-ai agent** (Python) calling MCP tools end-to-end via SPIFFE authentication:
+Now that the CRD supports `spiffe` as an upstream provider type, the manifests could use:
 
-- A pydantic-ai agent running as a Kubernetes pod with a SPIFFE SVID
-- The agent authenticates to the MCP proxy via mTLS, obtains a JWT
-- The agent calls MCP tools using the JWT (standard Bearer auth)
-- Cedar policies control which tools the agent can call
-- The audience sees a real AI agent workflow, not manual curl commands
+```yaml
+# Future (upstream provider pattern)
+upstreamProviders:
+  - name: spiffe-td
+    type: spiffe
+    spiffeConfig:
+      trustDomain: "toolhive.dev"
+  - name: keycloak
+    type: oidc-trust
+```
 
-This requires: a pydantic-ai wrapper that handles the SPIFFE mTLS → OAuth → MCP tool call flow, packaged as a container image deployable via MCPServer or standalone pod.
+**Why this is not done yet:** The top-level `spiffeTrustDomain` controls two concerns: (1) the mTLS middleware (accept client certs from this trust domain) and (2) the SPIFFE upstream identity source. The CRD upstream `spiffe` type currently only maps to the latter. The mTLS middleware and `spiffeClientPolicy` (registration allow-list) are server-level concerns that remain top-level.
 
-### RFC 8693 user delegation with `act` claims
+**Migration plan:** Either keep `spiffeClientPolicy` top-level (it's a server concern, not per-upstream) and move only `spiffeTrustDomain` to the upstream list, or model the entire SPIFFE configuration — trust domain + client policy — as an upstream with richer config.
 
-When a user invokes an agent (e.g., via a browser), the flow should produce a **delegated token** where `sub` = user (from OIDC) and `act.sub` = agent SPIFFE ID. This enables:
+---
 
-- Cedar policies that reason about both the user AND the agent: "allow this tool call only when user is in group `engineering` AND agent is `devops-agent`"
-- Audit trail completeness: every action records who requested it and which agent executed it
-- Authority reduction: the delegated token carries the intersection of user and agent permissions
+## 5. Next Steps
 
-Implementation: server-side RFC 8693 handler in `pkg/authserver/server/handlers/`, composing the existing SPIFFE upstream (agent identity) with an OIDC upstream (user identity). The `IdentityProvider` hierarchy already supports both flow types.
+### Tier 2 sidecar: local auth server for MCP-auth-aware agents
+
+The current sidecar proxy (`thv-agent-proxy`) works for agents that pass Bearer tokens directly. Agents like Claude Code and Codex expect to perform MCP auth discovery (RFC 9728 Protected Resource Metadata) followed by an OAuth authorization code + PKCE flow. They don't just pass a pre-obtained token.
+
+For these agents, the sidecar must run a **local MCP-compliant OAuth authorization server** on localhost:
+1. The agent discovers auth requirements via `/.well-known/oauth-authorization-server`
+2. The sidecar serves the OIDC login page (redirecting to the real IdP)
+3. The user logs in via Keycloak/Entra/Okta
+4. The sidecar receives the auth code callback, exchanges for tokens
+5. The agent receives a local access token
+6. On MCP calls, the sidecar exchanges the local token + SPIFFE JWT for a delegated token upstream
+
+This is architecturally feasible — the sidecar would run a stripped-down instance of ToolHive's embedded auth server (`pkg/authserver/`). The machinery exists; it's a deployment topology change.
+
+**Trade-offs:**
+- Significant complexity increase (full OAuth AS in the sidecar)
+- Session management between the agent, sidecar AS, and upstream MCP server
+- Token refresh coordination
+- Warrants a separate RFC in `toolhive-rfcs`
+
+### Dynamic discovery metadata
+
+`buildOAuthMetadata()` hardcodes `grant_types_supported`. When only SPIFFE is configured (no redirect flow providers), the discovery metadata should reflect this:
+- `grant_types_supported`: only `["client_credentials"]`
+- `token_endpoint_auth_methods_supported`: `["spiffe"]` only
+- `authorization_endpoint`: omitted
 
 ### SPIRE integration
 
@@ -312,7 +337,27 @@ Replace cert-manager CSI driver with SPIRE for production-grade attestation:
 - Two-layer attestation (node + workload) instead of trusting kubelet alone
 - In-memory key storage (private keys never touch disk)
 - Dynamic trust bundle distribution via Workload API
-- Experimental Sigstore integration for image provenance attestation
+- Container-level identity differentiation (`k8s:container-name` selector)
 - ~50-80 lines of code change in `pkg/runner/runner.go` (`workloadapi.NewX509Source`)
 
 See Section 2 (Portability) for the detailed change analysis.
+
+### MCPAgentProxy CRD
+
+The operator could manage sidecar proxy pods via an `MCPAgentProxy` CRD:
+
+```yaml
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPAgentProxy
+metadata:
+  name: coding-agent
+spec:
+  serviceAccountName: coding-agent
+  agentContainer:
+    image: my-coding-agent:latest
+  mcpServers:
+    - name: fetch
+      ref: { name: fetch, namespace: toolhive-system }
+```
+
+The operator would auto-inject the sidecar container with SPIFFE CSI volume, assign listen ports, set agent env vars to `localhost:<port>`, and create NetworkPolicy. This follows the same pattern as the existing MCPServer controller (CRD → Deployment + Service) but for the client side.
