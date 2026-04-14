@@ -11,6 +11,7 @@ package exchanger
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -175,6 +176,7 @@ func (e *Exchanger) Exchange(ctx context.Context, userToken string) (string, err
 	if cached, ok := e.delegatedCache.Load(cacheKey); ok {
 		ct := cached.(*cachedToken)
 		if time.Now().Add(expiryBuffer).Before(ct.expiresAt) {
+			e.logger.Debug("using cached delegated token", "cache_key", cacheKey[:12])
 			return ct.token, nil
 		}
 		// Expired — remove and proceed with a fresh exchange.
@@ -221,9 +223,25 @@ func (e *Exchanger) Exchange(ctx context.Context, userToken string) (string, err
 			HTTPClient:     e.mtlsClient,
 		}
 
+		e.logger.Debug("performing token exchange",
+			"actor", e.spiffeID.String(),
+			"subject_token_type", subjectTokenType,
+		)
+
 		token, err := cfg.TokenSource(ctx).Token()
 		if err != nil {
 			return nil, fmt.Errorf("token exchange failed: %w", err)
+		}
+
+		// Log the delegated JWT claims for observability.
+		if claims := decodeJWTClaims(token.AccessToken); claims != nil {
+			e.logger.Debug("delegated token issued",
+				"sub", claims["sub"],
+				"email", claims["email"],
+				"name", claims["name"],
+				"act", claims["act"],
+				"expires_in", token.Expiry.Sub(time.Now()).Round(time.Second).String(),
+			)
 		}
 
 		// Cache the delegated token.
@@ -262,4 +280,22 @@ func (e *Exchanger) ensureAgentToken(ctx context.Context) error {
 func hashToken(token string) string {
 	h := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(h[:])
+}
+
+// decodeJWTClaims does a best-effort decode of a JWT payload for logging.
+// Returns nil if the token is not a valid JWT. Does not verify the signature.
+func decodeJWTClaims(token string) map[string]interface{} {
+	parts := strings.SplitN(token, ".", 3)
+	if len(parts) != 3 {
+		return nil
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil
+	}
+	var claims map[string]interface{}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return nil
+	}
+	return claims
 }

@@ -144,9 +144,16 @@ func (*Proxy) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 	userToken, ok := extractBearerToken(r)
 	if !ok {
+		p.logger.Debug("rejected request: no Bearer token", "method", r.Method, "path", r.URL.Path)
 		writeJSONError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid Bearer token")
 		return
 	}
+
+	p.logger.Debug("received request with user token",
+		"method", r.Method,
+		"path", r.URL.Path,
+		"session_id", r.Header.Get("Mcp-Session-Id"),
+	)
 
 	delegated, err := p.exchanger.Exchange(r.Context(), userToken)
 	if err != nil {
@@ -154,6 +161,8 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusUnauthorized, "unauthorized", "token exchange failed")
 		return
 	}
+
+	p.logger.Debug("forwarding with delegated token", "path", r.URL.Path)
 
 	// Store the delegated token in the request context so the Rewrite
 	// function can retrieve it without per-request proxy allocation.
