@@ -426,8 +426,8 @@ func GenerateAuthServerEnvVars(
 			if b.Provider.OAuth2Config != nil {
 				clientSecretRef = b.Provider.OAuth2Config.ClientSecretRef
 			}
-		case mcpv1alpha1.UpstreamProviderTypeOIDCTrust:
-			// oidc-trust providers have no client secret.
+		case mcpv1alpha1.UpstreamProviderTypeOIDCTrust, mcpv1alpha1.UpstreamProviderTypeSPIFFE:
+			// oidc-trust and SPIFFE providers have no client secret.
 		}
 
 		if clientSecretRef != nil {
@@ -777,70 +777,103 @@ func buildUpstreamRunConfig(
 
 	switch provider.Type {
 	case mcpv1alpha1.UpstreamProviderTypeOIDC:
-		if provider.OIDCConfig != nil {
-			config.OIDCConfig = &authserver.OIDCUpstreamRunConfig{
-				IssuerURL:   provider.OIDCConfig.IssuerURL,
-				ClientID:    provider.OIDCConfig.ClientID,
-				RedirectURI: provider.OIDCConfig.RedirectURI,
-				Scopes:      provider.OIDCConfig.Scopes,
-			}
-			// If client secret is configured, reference it via env var
-			if provider.OIDCConfig.ClientSecretRef != nil {
-				config.OIDCConfig.ClientSecretEnvVar = envVarName
-			}
-			if provider.OIDCConfig.UserInfoOverride != nil {
-				config.OIDCConfig.UserInfoOverride = buildUserInfoRunConfig(provider.OIDCConfig.UserInfoOverride)
-			}
-		}
+		buildOIDCUpstreamRunConfig(config, provider, envVarName)
 	case mcpv1alpha1.UpstreamProviderTypeOAuth2:
-		if provider.OAuth2Config != nil {
-			config.OAuth2Config = &authserver.OAuth2UpstreamRunConfig{
-				AuthorizationEndpoint: provider.OAuth2Config.AuthorizationEndpoint,
-				TokenEndpoint:         provider.OAuth2Config.TokenEndpoint,
-				ClientID:              provider.OAuth2Config.ClientID,
-				RedirectURI:           provider.OAuth2Config.RedirectURI,
-				Scopes:                provider.OAuth2Config.Scopes,
-			}
-			// If client secret is configured, reference it via env var
-			if provider.OAuth2Config.ClientSecretRef != nil {
-				config.OAuth2Config.ClientSecretEnvVar = envVarName
-			}
-			if provider.OAuth2Config.UserInfo != nil {
-				config.OAuth2Config.UserInfo = buildUserInfoRunConfig(provider.OAuth2Config.UserInfo)
-			}
-			if provider.OAuth2Config.TokenResponseMapping != nil {
-				m := provider.OAuth2Config.TokenResponseMapping
-				config.OAuth2Config.TokenResponseMapping = &authserver.TokenResponseMappingRunConfig{
-					AccessTokenPath:  m.AccessTokenPath,
-					ScopePath:        m.ScopePath,
-					RefreshTokenPath: m.RefreshTokenPath,
-					ExpiresInPath:    m.ExpiresInPath,
-				}
-			}
-		}
+		buildOAuth2UpstreamRunConfig(config, provider, envVarName)
 	case mcpv1alpha1.UpstreamProviderTypeOIDCTrust:
-		// oidc-trust reuses the OIDC config but only needs issuer, clientID, and optional CA bundle.
-		// No client secret, redirect URI, or scopes are required.
-		if provider.OIDCConfig != nil {
-			var caBundlePath string
-			if provider.OIDCConfig.CABundleConfigMapRef != nil && provider.OIDCConfig.CABundleConfigMapRef.ConfigMapRef != nil {
-				ref := provider.OIDCConfig.CABundleConfigMapRef
-				key := ref.ConfigMapRef.Key
-				if key == "" {
-					key = UpstreamCABundleDefaultKey
-				}
-				caBundlePath = fmt.Sprintf("%s/%s/%s", UpstreamCABundleMountBasePath, provider.Name, key)
-			}
-			config.OIDCConfig = &authserver.OIDCUpstreamRunConfig{
-				IssuerURL:      provider.OIDCConfig.IssuerURL,
-				ClientID:       provider.OIDCConfig.ClientID,
-				CABundlePath:   caBundlePath,
-				AllowPrivateIP: provider.OIDCConfig.AllowPrivateIP,
-			}
+		buildOIDCTrustUpstreamRunConfig(config, provider)
+	case mcpv1alpha1.UpstreamProviderTypeSPIFFE:
+		if provider.SPIFFEConfig != nil {
+			config.SPIFFETrustDomain = provider.SPIFFEConfig.TrustDomain
 		}
 	}
 
 	return config
+}
+
+// buildOIDCUpstreamRunConfig populates the OIDC-specific fields on the run config.
+func buildOIDCUpstreamRunConfig(
+	config *authserver.UpstreamRunConfig,
+	provider *mcpv1alpha1.UpstreamProviderConfig,
+	envVarName string,
+) {
+	if provider.OIDCConfig == nil {
+		return
+	}
+	config.OIDCConfig = &authserver.OIDCUpstreamRunConfig{
+		IssuerURL:   provider.OIDCConfig.IssuerURL,
+		ClientID:    provider.OIDCConfig.ClientID,
+		RedirectURI: provider.OIDCConfig.RedirectURI,
+		Scopes:      provider.OIDCConfig.Scopes,
+	}
+	// If client secret is configured, reference it via env var
+	if provider.OIDCConfig.ClientSecretRef != nil {
+		config.OIDCConfig.ClientSecretEnvVar = envVarName
+	}
+	if provider.OIDCConfig.UserInfoOverride != nil {
+		config.OIDCConfig.UserInfoOverride = buildUserInfoRunConfig(provider.OIDCConfig.UserInfoOverride)
+	}
+}
+
+// buildOAuth2UpstreamRunConfig populates the OAuth2-specific fields on the run config.
+func buildOAuth2UpstreamRunConfig(
+	config *authserver.UpstreamRunConfig,
+	provider *mcpv1alpha1.UpstreamProviderConfig,
+	envVarName string,
+) {
+	if provider.OAuth2Config == nil {
+		return
+	}
+	config.OAuth2Config = &authserver.OAuth2UpstreamRunConfig{
+		AuthorizationEndpoint: provider.OAuth2Config.AuthorizationEndpoint,
+		TokenEndpoint:         provider.OAuth2Config.TokenEndpoint,
+		ClientID:              provider.OAuth2Config.ClientID,
+		RedirectURI:           provider.OAuth2Config.RedirectURI,
+		Scopes:                provider.OAuth2Config.Scopes,
+	}
+	// If client secret is configured, reference it via env var
+	if provider.OAuth2Config.ClientSecretRef != nil {
+		config.OAuth2Config.ClientSecretEnvVar = envVarName
+	}
+	if provider.OAuth2Config.UserInfo != nil {
+		config.OAuth2Config.UserInfo = buildUserInfoRunConfig(provider.OAuth2Config.UserInfo)
+	}
+	if provider.OAuth2Config.TokenResponseMapping != nil {
+		m := provider.OAuth2Config.TokenResponseMapping
+		config.OAuth2Config.TokenResponseMapping = &authserver.TokenResponseMappingRunConfig{
+			AccessTokenPath:  m.AccessTokenPath,
+			ScopePath:        m.ScopePath,
+			RefreshTokenPath: m.RefreshTokenPath,
+			ExpiresInPath:    m.ExpiresInPath,
+		}
+	}
+}
+
+// buildOIDCTrustUpstreamRunConfig populates the OIDC-trust-specific fields on the run config.
+// oidc-trust reuses the OIDC config but only needs issuer, clientID, and optional CA bundle.
+// No client secret, redirect URI, or scopes are required.
+func buildOIDCTrustUpstreamRunConfig(
+	config *authserver.UpstreamRunConfig,
+	provider *mcpv1alpha1.UpstreamProviderConfig,
+) {
+	if provider.OIDCConfig == nil {
+		return
+	}
+	var caBundlePath string
+	if provider.OIDCConfig.CABundleConfigMapRef != nil && provider.OIDCConfig.CABundleConfigMapRef.ConfigMapRef != nil {
+		ref := provider.OIDCConfig.CABundleConfigMapRef
+		key := ref.ConfigMapRef.Key
+		if key == "" {
+			key = UpstreamCABundleDefaultKey
+		}
+		caBundlePath = fmt.Sprintf("%s/%s/%s", UpstreamCABundleMountBasePath, provider.Name, key)
+	}
+	config.OIDCConfig = &authserver.OIDCUpstreamRunConfig{
+		IssuerURL:      provider.OIDCConfig.IssuerURL,
+		ClientID:       provider.OIDCConfig.ClientID,
+		CABundlePath:   caBundlePath,
+		AllowPrivateIP: provider.OIDCConfig.AllowPrivateIP,
+	}
 }
 
 // buildUserInfoRunConfig converts CRD UserInfoConfig to authserver.UserInfoRunConfig.

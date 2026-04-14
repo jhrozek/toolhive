@@ -155,7 +155,7 @@ func TestMCPExternalAuthConfig_Validate(t *testing.T) {
 			expectErr: false,
 		},
 		{
-			name: "invalid embeddedAuthServer with no providers",
+			name: "valid embeddedAuthServer with no providers (SPIFFE-only mode)",
 			config: &MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-embedded-empty",
@@ -169,8 +169,7 @@ func TestMCPExternalAuthConfig_Validate(t *testing.T) {
 					},
 				},
 			},
-			expectErr: true,
-			errMsg:    "at least one upstream provider is required",
+			expectErr: false,
 		},
 		{
 			name: "invalid OIDC provider without oidcConfig",
@@ -501,7 +500,63 @@ func TestMCPExternalAuthConfig_validateUpstreamProvider(t *testing.T) {
 				OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://oauth.example.com", ClientID: "client-id"},
 			},
 			expectErr: true,
-			errMsg:    "oidcConfig must be set when type is 'oidc' and must not be set otherwise",
+			errMsg:    "oauth2Config must be set when type is 'oauth2'",
+		},
+		{
+			name: "valid SPIFFE provider",
+			provider: UpstreamProviderConfig{
+				Name:         "spiffe-upstream",
+				Type:         UpstreamProviderTypeSPIFFE,
+				SPIFFEConfig: &SPIFFEUpstreamConfig{TrustDomain: "example.org"},
+			},
+			expectErr: false,
+		},
+		{
+			name: "SPIFFE provider without spiffeConfig",
+			provider: UpstreamProviderConfig{
+				Name: "spiffe-upstream",
+				Type: UpstreamProviderTypeSPIFFE,
+			},
+			expectErr: true,
+			errMsg:    "spiffeConfig must be set when type is 'spiffe'",
+		},
+		{
+			name: "SPIFFE provider with oidcConfig",
+			provider: UpstreamProviderConfig{
+				Name:         "spiffe-upstream",
+				Type:         UpstreamProviderTypeSPIFFE,
+				SPIFFEConfig: &SPIFFEUpstreamConfig{TrustDomain: "example.org"},
+				OIDCConfig:   &OIDCUpstreamConfig{IssuerURL: "https://example.com", ClientID: "client-id"},
+			},
+			expectErr: true,
+			errMsg:    "oidcConfig must not be set when type is 'spiffe'",
+		},
+		{
+			name: "SPIFFE provider with oauth2Config",
+			provider: UpstreamProviderConfig{
+				Name:         "spiffe-upstream",
+				Type:         UpstreamProviderTypeSPIFFE,
+				SPIFFEConfig: &SPIFFEUpstreamConfig{TrustDomain: "example.org"},
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://oauth.example.com/authorize",
+					TokenEndpoint:         "https://oauth.example.com/token",
+					ClientID:              "client-id",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://oauth.example.com/userinfo"},
+				},
+			},
+			expectErr: true,
+			errMsg:    "oauth2Config must not be set when type is 'spiffe'",
+		},
+		{
+			name: "OIDC provider with spiffeConfig",
+			provider: UpstreamProviderConfig{
+				Name:         "github",
+				Type:         UpstreamProviderTypeOIDC,
+				OIDCConfig:   &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+				SPIFFEConfig: &SPIFFEUpstreamConfig{TrustDomain: "example.org"},
+			},
+			expectErr: true,
+			errMsg:    "spiffeConfig must not be set when type is 'oidc'",
 		},
 	}
 

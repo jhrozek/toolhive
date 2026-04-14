@@ -329,6 +329,9 @@ const (
 	// UpstreamProviderTypeOIDCTrust is for OIDC providers that only provide JWKS trust
 	// for token exchange validation, without participating in redirect-flow login.
 	UpstreamProviderTypeOIDCTrust UpstreamProviderType = "oidc-trust"
+
+	// UpstreamProviderTypeSPIFFE is for SPIFFE trust domain providers using mTLS direct assertion.
+	UpstreamProviderTypeSPIFFE UpstreamProviderType = "spiffe"
 )
 
 // UpstreamProviderConfig defines configuration for an upstream Identity Provider.
@@ -342,20 +345,25 @@ type UpstreamProviderConfig struct {
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`
 	Name string `json:"name"`
 
-	// Type specifies the provider type: "oidc", "oauth2", or "oidc-trust"
-	// +kubebuilder:validation:Enum=oidc;oauth2;oidc-trust
+	// Type specifies the provider type: "oidc", "oauth2", "oidc-trust", or "spiffe"
+	// +kubebuilder:validation:Enum=oidc;oauth2;oidc-trust;spiffe
 	// +kubebuilder:validation:Required
 	Type UpstreamProviderType `json:"type"`
 
 	// OIDCConfig contains OIDC-specific configuration.
-	// Required when Type is "oidc", must be nil when Type is "oauth2".
+	// Required when Type is "oidc" or "oidc-trust", must be nil for other types.
 	// +optional
 	OIDCConfig *OIDCUpstreamConfig `json:"oidcConfig,omitempty"`
 
 	// OAuth2Config contains OAuth 2.0-specific configuration.
-	// Required when Type is "oauth2", must be nil when Type is "oidc".
+	// Required when Type is "oauth2", must be nil for other types.
 	// +optional
 	OAuth2Config *OAuth2UpstreamConfig `json:"oauth2Config,omitempty"`
+
+	// SPIFFEConfig contains SPIFFE-specific configuration.
+	// Required when Type is "spiffe", must be nil for other types.
+	// +optional
+	SPIFFEConfig *SPIFFEUpstreamConfig `json:"spiffeConfig,omitempty"`
 }
 
 // OIDCUpstreamConfig contains configuration for OIDC providers.
@@ -454,6 +462,20 @@ type OAuth2UpstreamConfig struct {
 	// If nil, standard OAuth 2.0 token response parsing is used.
 	// +optional
 	TokenResponseMapping *TokenResponseMapping `json:"tokenResponseMapping,omitempty"`
+}
+
+// SPIFFEUpstreamConfig contains configuration for SPIFFE trust domain providers.
+// SPIFFE providers use mTLS with X.509-SVID client certificates for direct assertion,
+// without redirect-based login flows.
+type SPIFFEUpstreamConfig struct {
+	// TrustDomain is the SPIFFE trust domain that this upstream accepts.
+	// Client certificates must contain a SPIFFE ID from this trust domain.
+	// Must be a valid DNS-like name (e.g., "example.org", "prod.example.com").
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$`
+	TrustDomain string `json:"trustDomain"`
 }
 
 // TokenResponseMapping maps non-standard token response fields to standard OAuth 2.0 fields
@@ -963,27 +985,47 @@ func (*MCPExternalAuthConfig) validateUpstreamProvider(index int, provider *Upst
 		if provider.OIDCConfig == nil {
 			return fmt.Errorf("%s: oidcConfig must be set when type is 'oidc'", prefix)
 		}
-		if provider.OAuth2Config != nil {
-			return fmt.Errorf("%s: oauth2Config must not be set when type is 'oidc'", prefix)
-		}
 	case UpstreamProviderTypeOAuth2:
 		if provider.OAuth2Config == nil {
 			return fmt.Errorf("%s: oauth2Config must be set when type is 'oauth2'", prefix)
-		}
-		if provider.OIDCConfig != nil {
-			return fmt.Errorf("%s: oidcConfig must not be set when type is 'oauth2'", prefix)
 		}
 	case UpstreamProviderTypeOIDCTrust:
 		if provider.OIDCConfig == nil {
 			return fmt.Errorf("%s: oidcConfig must be set when type is 'oidc-trust'", prefix)
 		}
-		if provider.OAuth2Config != nil {
-			return fmt.Errorf("%s: oauth2Config must not be set when type is 'oidc-trust'", prefix)
+	case UpstreamProviderTypeSPIFFE:
+		if provider.SPIFFEConfig == nil {
+			return fmt.Errorf("%s: spiffeConfig must be set when type is 'spiffe'", prefix)
 		}
 	default:
 		return fmt.Errorf("%s: unsupported provider type: %s", prefix, provider.Type)
 	}
 
+	// Cross-config rejection: each config field must only be set for its own type.
+	return rejectForeignConfigs(prefix, provider)
+}
+
+// rejectForeignConfigs ensures that config fields for other provider types are not set.
+func rejectForeignConfigs(prefix string, provider *UpstreamProviderConfig) error {
+	type configCheck struct {
+		name    string
+		isSet   bool
+		ownerTy UpstreamProviderType
+	}
+	checks := []configCheck{
+		{"oidcConfig", provider.OIDCConfig != nil, UpstreamProviderTypeOIDC},
+		{"oauth2Config", provider.OAuth2Config != nil, UpstreamProviderTypeOAuth2},
+		{"spiffeConfig", provider.SPIFFEConfig != nil, UpstreamProviderTypeSPIFFE},
+	}
+	for _, c := range checks {
+		// oidc-trust also uses oidcConfig, so skip that combination.
+		if c.name == "oidcConfig" && provider.Type == UpstreamProviderTypeOIDCTrust {
+			continue
+		}
+		if c.isSet && c.ownerTy != provider.Type {
+			return fmt.Errorf("%s: %s must not be set when type is '%s'", prefix, c.name, provider.Type)
+		}
+	}
 	return nil
 }
 

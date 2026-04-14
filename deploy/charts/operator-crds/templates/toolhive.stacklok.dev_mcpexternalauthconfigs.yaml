@@ -576,7 +576,7 @@ spec:
                         oauth2Config:
                           description: |-
                             OAuth2Config contains OAuth 2.0-specific configuration.
-                            Required when Type is "oauth2", must be nil when Type is "oidc".
+                            Required when Type is "oauth2", must be nil for other types.
                           properties:
                             authorizationEndpoint:
                               description: AuthorizationEndpoint is the URL for the
@@ -722,7 +722,7 @@ spec:
                         oidcConfig:
                           description: |-
                             OIDCConfig contains OIDC-specific configuration.
-                            Required when Type is "oidc", must be nil when Type is "oauth2".
+                            Required when Type is "oidc" or "oidc-trust", must be nil for other types.
                           properties:
                             allowPrivateIP:
                               description: |-
@@ -869,13 +869,31 @@ spec:
                           - clientId
                           - issuerUrl
                           type: object
+                        spiffeConfig:
+                          description: |-
+                            SPIFFEConfig contains SPIFFE-specific configuration.
+                            Required when Type is "spiffe", must be nil for other types.
+                          properties:
+                            trustDomain:
+                              description: |-
+                                TrustDomain is the SPIFFE trust domain that this upstream accepts.
+                                Client certificates must contain a SPIFFE ID from this trust domain.
+                                Must be a valid DNS-like name (e.g., "example.org", "prod.example.com").
+                              maxLength: 253
+                              minLength: 1
+                              pattern: ^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$
+                              type: string
+                          required:
+                          - trustDomain
+                          type: object
                         type:
                           description: 'Type specifies the provider type: "oidc",
-                            "oauth2", or "oidc-trust"'
+                            "oauth2", "oidc-trust", or "spiffe"'
                           enum:
                           - oidc
                           - oauth2
                           - oidc-trust
+                          - spiffe
                           type: string
                       required:
                       - name

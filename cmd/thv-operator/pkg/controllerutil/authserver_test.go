@@ -980,6 +980,35 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 				assert.Equal(t, UpstreamClientSecretEnvVar+"_GITHUB", github.OAuth2Config.ClientSecretEnvVar)
 			},
 		},
+		{
+			name: "with SPIFFE upstream provider",
+			authConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1alpha1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
+					{
+						Name:         "spiffe-upstream",
+						Type:         mcpv1alpha1.UpstreamProviderTypeSPIFFE,
+						SPIFFEConfig: &mcpv1alpha1.SPIFFEUpstreamConfig{TrustDomain: "example.org"},
+					},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				require.Len(t, config.Upstreams, 1)
+				upstream := config.Upstreams[0]
+				assert.Equal(t, "spiffe-upstream", upstream.Name)
+				assert.Equal(t, "spiffe", string(upstream.Type))
+				assert.Equal(t, "example.org", upstream.SPIFFETrustDomain)
+			},
+		},
 	}
 
 	for _, tt := range tests {
