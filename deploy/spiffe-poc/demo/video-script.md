@@ -139,33 +139,90 @@ only — delegation policies come in Act 4). Then an authorization matrix:
 
 ---
 
-## Summary
+## Act 5 — Sidecar proxy: wrapping an unmodified agent
 
-**What the audience sees:** Four numbered points.
+**Prerequisites:** The sidecar test pod must be deployed:
+```bash
+./deploy/spiffe-poc/demo/build-agent-proxy.sh
+kubectl apply -f deploy/spiffe-poc/demo/manifests/10-sidecar-agent-pod.yaml
+```
+
+**What the audience sees:** Five pieces of evidence from actual logs:
+
+1. Agent container has no SPIFFE creds (`ls` fails)
+2. Sidecar bootstrap logs showing SPIFFE identity loaded
+3. Sidecar debug logs showing token exchange with decoded claims
+   (`sub`, `email`, `name`, `act.sub`)
+4. Cedar context from MCP server showing composite identity evaluation
+5. Cedar decision: allow (delegation policy matched)
 
 **What to say:**
 
-> Four layers, one framework.
+> Acts 1 through 4 used a custom agent that speaks SPIFFE natively.
+> But real coding agents — Claude Code, Codex, Cursor — don't know
+> about SPIFFE. They just send HTTP requests with a user token.
+>
+> So we built a sidecar proxy. Two containers in one pod: the agent
+> and the proxy. The agent talks to localhost — plain HTTP, just a
+> user token in the Authorization header. The sidecar intercepts
+> every request, performs the token exchange transparently, and
+> forwards to the MCP server over mTLS with the delegated JWT.
+>
+> The agent container has zero access to SPIFFE credentials. Look —
+> the volume isn't even mounted. The security boundary is the
+> container. The agent can't bypass the proxy because the MCP
+> server requires mTLS, and only the sidecar has the certificate.
+>
+> Now look at the sidecar logs. It received the request, exchanged
+> the user's Keycloak token for a delegated JWT — you can see the
+> claims right here: sub is the Keycloak user UUID, email is
+> devops-user@example.com, and act.sub is the sidecar's SPIFFE ID.
+> Both identities in one token.
+>
+> And on the MCP server side, Cedar evaluated the same composite
+> identity. Same policies as Act 4 — the difference is the agent
+> didn't have to know anything about SPIFFE or token exchange. The
+> sidecar handled it.
+>
+> This is the path to wrapping real coding agents. The agent thinks
+> it's talking to a local MCP server. The sidecar makes it secure.
+
+---
+
+## Summary
+
+**What the audience sees:** Five numbered points.
+
+**What to say:**
+
+> Five layers, one framework.
 >
 > Identity — SPIFFE SVIDs, provisioned automatically.
 > Authentication — X.509 mTLS to OAuth JWT, no passwords.
 > Authorization — Cedar policies, per-tool, per-workload.
 > Delegation — RFC 8693 token exchange, composite identity.
+> Sidecar proxy — unmodified agents wrapped transparently.
 >
-> Autonomous or delegated, the same policy framework applies. Same
-> audit trail. Least-privilege access for AI agents, enforced
-> cryptographically. No service mesh required.
+> Autonomous, delegated, or proxied — the same policy framework
+> applies. Same audit trail. Least-privilege access for AI agents,
+> enforced cryptographically. No service mesh required.
 
 ---
 
 ## Tips
 
 - Pre-run once to warm up TLS handshakes and Keycloak port-forward.
+- Deploy the sidecar test pod before running the script if you want Act 5.
+  The script gracefully skips it if the pod isn't running.
 - The JWT decode is the moment of insight in Act 2 — slow down there.
 - The delegated JWT decode in Act 4 is the second moment — point out
   `sub` vs `act.sub`.
+- Act 5's debug logs are the third moment — the sidecar shows what
+  it exchanged, and the MCP server shows what Cedar evaluated. Two-sided
+  proof that delegation happened.
 - The three-beat escalation (devops succeeds / intern denied / rogue
   rejected) builds tension for the Act 4 payoff where intern gets
-  unlocked via delegation.
+  unlocked via delegation. Act 5 extends the payoff: even agents
+  that don't speak SPIFFE get the same protection.
 - If time is short, the SPIRE callout in Act 1 can be trimmed to one
   sentence.

@@ -602,12 +602,174 @@ act4_delegation() {
 }
 
 # ---------------------------------------------------------------------------
+# Act 5: Sidecar proxy — wrapping an unmodified agent
+# ---------------------------------------------------------------------------
+act5_sidecar() {
+    step "Act 5 — Sidecar proxy: wrapping an unmodified agent"
+    blank
+    info "Acts 1-4 used a custom pydantic-ai agent that speaks SPIFFE natively."
+    info "But what about unmodified agents — Claude Code, Codex, Cursor?"
+    blank
+    info "A sidecar proxy sits between the agent and the MCP server:"
+    info "  Agent → localhost:8080 (plain HTTP, user token only)"
+    info "       → Sidecar (SPIFFE mTLS + token exchange)"
+    info "       → MCP server (delegated JWT with composite identity)"
+    blank
+    info "The agent has NO SPIFFE credentials. The sidecar handles everything."
+    blank
+
+    # Check if sidecar pod is running
+    local sidecar_phase
+    sidecar_phase=$(kubectl --context "${CONTEXT}" get pod sidecar-test -n "${AGENTS_NS}" \
+        -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
+
+    if [ "${sidecar_phase}" != "Running" ]; then
+        info "${YELLOW}Sidecar test pod not running (${sidecar_phase}).${NC}"
+        info "Deploy it: kubectl apply -f deploy/spiffe-poc/demo/manifests/10-sidecar-agent-pod.yaml"
+        return
+    fi
+
+    # -----------------------------------------------------------------------
+    # Evidence 1: Agent container has no SPIFFE creds
+    # -----------------------------------------------------------------------
+    info "Evidence 1: Agent container has NO SPIFFE credentials"
+    blank
+    dim "  \$ kubectl exec sidecar-test -c agent -- ls /var/run/secrets/spiffe.io/"
+    local spiffe_check
+    spiffe_check=$(kubectl --context "${CONTEXT}" exec -n "${AGENTS_NS}" sidecar-test -c agent -- \
+        ls /var/run/secrets/spiffe.io/ 2>&1 || true)
+    dim "  ${spiffe_check}"
+    blank
+
+    # -----------------------------------------------------------------------
+    # Evidence 2: Sidecar bootstrap logs
+    # -----------------------------------------------------------------------
+    info "Evidence 2: Sidecar bootstrapped with SPIFFE identity"
+    blank
+    kubectl --context "${CONTEXT}" logs sidecar-test -n "${AGENTS_NS}" -c spiffe-proxy 2>&1 \
+        | grep -E '"level":"INFO"' | while IFS= read -r line; do
+        dim "  ${line}"
+    done
+    blank
+
+    # -----------------------------------------------------------------------
+    # Evidence 3: Make an MCP call through the sidecar
+    # -----------------------------------------------------------------------
+    info "Evidence 3: MCP tool call through sidecar (devops-user → fetch)"
+    blank
+
+    # Get a fresh devops-user token
+    kubectl --context "${CONTEXT}" port-forward svc/keycloak-dev-service 8443:8443 -n keycloak &>/dev/null &
+    local kc_pf=$!
+    sleep 3
+    local user_token
+    user_token=$("${SCRIPT_DIR}/get-user-token.sh" devops-user devops123 id_token 2>/dev/null || true)
+    kill "${kc_pf}" 2>/dev/null || true
+    wait "${kc_pf}" 2>/dev/null || true
+
+    if [ -z "${user_token}" ]; then
+        result "  Keycloak token fetch" "${TOKEN_DENIED}"
+        return
+    fi
+
+    # Initialize MCP session through the sidecar
+    kubectl --context "${CONTEXT}" exec -n "${AGENTS_NS}" sidecar-test -c agent -- \
+        sh -c "curl -s --max-time 15 -o /dev/null \
+        -H 'Content-Type: application/json' \
+        -H \"Authorization: Bearer ${user_token}\" \
+        -d '{\"jsonrpc\":\"2.0\",\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"demo\",\"version\":\"1.0\"}},\"id\":1}' \
+        'http://localhost:8080/mcp'" 2>/dev/null
+
+    # Small delay for logs to flush
+    sleep 1
+
+    # -----------------------------------------------------------------------
+    # Evidence 4: Sidecar debug logs showing token exchange
+    # -----------------------------------------------------------------------
+    info "Evidence 4: Sidecar performed token exchange (debug logs)"
+    blank
+    kubectl --context "${CONTEXT}" logs sidecar-test -n "${AGENTS_NS}" -c spiffe-proxy 2>&1 \
+        | grep -E '"level":"DEBUG"' | tail -5 | while IFS= read -r line; do
+        dim "  ${line}"
+    done
+    blank
+
+    # Extract the key claims from the sidecar's exchange log
+    local exchange_log
+    exchange_log=$(kubectl --context "${CONTEXT}" logs sidecar-test -n "${AGENTS_NS}" -c spiffe-proxy 2>&1 \
+        | grep "delegated token issued" | tail -1)
+
+    if [ -n "${exchange_log}" ]; then
+        info "  Delegated JWT claims (from sidecar log):"
+        local dt_sub dt_email dt_name dt_act
+        dt_sub=$(printf '%s' "${exchange_log}" | jq -r '.sub // empty' 2>/dev/null)
+        dt_email=$(printf '%s' "${exchange_log}" | jq -r '.email // empty' 2>/dev/null)
+        dt_name=$(printf '%s' "${exchange_log}" | jq -r '.name // empty' 2>/dev/null)
+        dt_act=$(printf '%s' "${exchange_log}" | jq -r '.act.sub // empty' 2>/dev/null)
+        printf "         %-12s %s\n" "sub:" "${dt_sub}"
+        printf "         %-12s %s\n" "email:" "${dt_email}"
+        printf "         %-12s %s\n" "name:" "${dt_name}"
+        printf "         %-12s %s\n" "act.sub:" "${dt_act}"
+    fi
+    blank
+
+    # -----------------------------------------------------------------------
+    # Evidence 5: Cedar evaluation on the MCP server side
+    # -----------------------------------------------------------------------
+    local fetch_proxy
+    fetch_proxy=$(kubectl --context "${CONTEXT}" get pods -n "${OPERATOR_NS}" \
+        -l app.kubernetes.io/name=mcp-fetch-proxy -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+
+    if [ -n "${fetch_proxy}" ]; then
+        info "Evidence 5: Cedar evaluation on the MCP server (fetch proxy logs)"
+        blank
+
+        local cedar_ctx
+        cedar_ctx=$(kubectl --context "${CONTEXT}" logs "${fetch_proxy}" -n "${OPERATOR_NS}" 2>&1 \
+            | grep "cedar context" | tail -1)
+
+        if [ -n "${cedar_ctx}" ]; then
+            local ctx_email ctx_act ctx_sub
+            ctx_email=$(printf '%s' "${cedar_ctx}" | jq -r '.context.claim_email // empty' 2>/dev/null)
+            ctx_act=$(printf '%s' "${cedar_ctx}" | jq -r '.context.claim_act.sub // empty' 2>/dev/null)
+            ctx_sub=$(printf '%s' "${cedar_ctx}" | jq -r '.context.claim_sub // empty' 2>/dev/null)
+            dim "  Cedar evaluated:"
+            printf "         %-18s %s\n" "claim_sub:" "${ctx_sub}"
+            printf "         %-18s %s\n" "claim_email:" "${ctx_email}"
+            printf "         %-18s %s\n" "claim_act.sub:" "${ctx_act}"
+        fi
+
+        local cedar_decision
+        cedar_decision=$(kubectl --context "${CONTEXT}" logs "${fetch_proxy}" -n "${OPERATOR_NS}" 2>&1 \
+            | grep "cedar decision" | tail -1)
+
+        if [ -n "${cedar_decision}" ]; then
+            local decision policy
+            decision=$(printf '%s' "${cedar_decision}" | jq -r '.decision // empty' 2>/dev/null)
+            policy=$(printf '%s' "${cedar_decision}" | jq -r '.diagnostic.reasons[0].policy // empty' 2>/dev/null)
+            blank
+            if [ "${decision}" = "allow" ]; then
+                result "  Cedar decision: ${decision} (${policy} = delegation permit)" "${ALLOWED}"
+            else
+                result "  Cedar decision: ${decision}" "${DENIED}"
+            fi
+        fi
+    fi
+
+    blank
+    info "The agent sent only a Keycloak user token to localhost."
+    info "The sidecar exchanged it for a delegated JWT with both identities."
+    info "The MCP server evaluated the composite identity via Cedar."
+    info "The agent never touched SPIFFE credentials."
+}
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 summary() {
     step "Summary"
     blank
-    info "What just happened — in four steps:"
+    info "What just happened — in five steps:"
     blank
     info "1. Identity:       SPIFFE SVIDs provisioned automatically at pod startup."
     info "                   Format: spiffe://<trust-domain>/ns/<ns>/sa/<sa>"
@@ -628,8 +790,13 @@ summary() {
     info "                   Cedar evaluates the composite: who delegated, which agent,"
     info "                   which tool — all in one policy decision."
     blank
+    info "5. Sidecar proxy:  Unmodified agents wrapped transparently."
+    info "                   Agent talks to localhost with a user token."
+    info "                   Sidecar handles SPIFFE mTLS, token exchange, forwarding."
+    info "                   Same policy framework — agent never sees SPIFFE creds."
+    blank
     printf "    ${BOLD}Result:${NC} least-privilege access for AI agents, enforced cryptographically.\n"
-    printf "    ${BOLD}        Autonomous or delegated — same policy framework, same audit trail.${NC}\n"
+    printf "    ${BOLD}        Autonomous, delegated, or proxied — same policy, same audit trail.${NC}\n"
     blank
 }
 
@@ -656,6 +823,8 @@ main() {
     act3_authorization
     pause
     act4_delegation
+    pause
+    act5_sidecar
     pause
     summary
 }
