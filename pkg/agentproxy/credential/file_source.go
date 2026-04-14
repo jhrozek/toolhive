@@ -25,8 +25,8 @@ const debounceDelay = 200 * time.Millisecond
 // FileSource implements x509svid.Source by loading SVIDs from PEM files
 // and watching for cert-manager CSI driver rotations.
 type FileSource struct {
-	certPath string
-	keyPath  string
+	certPath  string
+	keyPath   string
 	current   atomic.Pointer[x509svid.SVID]
 	watcher   *fsnotify.Watcher
 	done      chan struct{}
